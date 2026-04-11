@@ -1,0 +1,35 @@
+[package]
+name = "wolfusb"
+version = "0.1.0"
+edition = "2024"
+description = "Share USB devices over IP"
+license = "MIT"
+
+[dependencies]
+# USB access
+rusb = "0.9"
+
+# Async runtime and networking
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+futures = "0.3"
+bytes = "1"
+
+# Serialization
+bincode = { version = "2", features = ["derive"] }
+
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# Logging
+log = "0.4"
+env_logger = "0.11"
+
+# Authentication
+sha2 = "0.10"
+hmac = "0.12"
+rand = "0.9"
