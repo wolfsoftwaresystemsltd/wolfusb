@@ -1,8 +1,9 @@
 // (C) Copyright Wolf Software Systems Ltd - https://wolf.uk.com
 
 use bincode::{Decode, Encode};
+use serde::Serialize;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode, Serialize)]
 pub enum UsbSpeed {
     Unknown,
     Low,
@@ -25,7 +26,7 @@ impl From<rusb::Speed> for UsbSpeed {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode, Serialize)]
 pub enum UsbTransferType {
     Control,
     Isochronous,
@@ -44,7 +45,7 @@ impl From<rusb::TransferType> for UsbTransferType {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode, Serialize)]
 pub enum UsbDirection {
     In,
     Out,
@@ -59,7 +60,7 @@ impl From<rusb::Direction> for UsbDirection {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Encode, Decode)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Encode, Decode, Serialize)]
 pub struct DeviceId {
     pub bus_number: u8,
     pub address: u8,
@@ -71,7 +72,7 @@ impl std::fmt::Display for DeviceId {
     }
 }
 
-#[derive(Debug, Clone, Encode, Decode)]
+#[derive(Debug, Clone, Encode, Decode, Serialize)]
 pub struct DeviceInfo {
     pub device_id: DeviceId,
     pub vendor_id: u16,

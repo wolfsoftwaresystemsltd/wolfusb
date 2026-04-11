@@ -54,6 +54,9 @@ enum Commands {
         /// Pre-shared authentication key
         #[arg(long, env = "WOLFUSB_KEY")]
         key: Option<String>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
         #[command(flatten)]
         tls_args: ClientTlsArgs,
     },
@@ -289,10 +292,11 @@ async fn main() -> anyhow::Result<()> {
         Commands::List {
             server,
             key,
+            json,
             tls_args,
         } => {
             let mut session = client_session(&server, key.as_ref(), &tls_args).await?;
-            wolfusb::client::commands::cmd_list(&mut session).await?;
+            wolfusb::client::commands::cmd_list(&mut session, json).await?;
         }
 
         Commands::Info {

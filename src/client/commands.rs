@@ -7,9 +7,13 @@ use crate::client::session::Session;
 use crate::protocol::messages::*;
 use crate::protocol::types::DeviceId;
 
-pub async fn cmd_list(session: &mut Session) -> anyhow::Result<()> {
+pub async fn cmd_list(session: &mut Session, json: bool) -> anyhow::Result<()> {
     let devices = session.list_devices().await?;
-    display::print_device_list(&devices);
+    if json {
+        println!("{}", serde_json::to_string(&devices)?);
+    } else {
+        display::print_device_list(&devices);
+    }
     Ok(())
 }
 
