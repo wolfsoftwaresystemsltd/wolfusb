@@ -453,6 +453,10 @@ src/
 
 On macOS and Windows, `detach_kernel_driver` failures are handled gracefully -- the operation is skipped without error.
 
+## Sponsorship
+
+If you find wolfusb useful, please consider [sponsoring the project](https://github.com/sponsors/wolfsoftwaresystemsltd) to support continued development.
+
 ## License
 
 MIT
