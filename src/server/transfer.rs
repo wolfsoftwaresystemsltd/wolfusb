@@ -6,6 +6,30 @@ use rusb::{Context, DeviceHandle};
 
 use crate::protocol::messages::*;
 
+/// Maximum buffer size for a single transfer (16 MiB).
+const MAX_TRANSFER_BUFFER: u32 = 16 * 1024 * 1024;
+
+fn capped_length(
+    length: u32,
+    req_session: u64,
+    req_device: crate::protocol::types::DeviceId,
+) -> std::result::Result<usize, TransferResponse> {
+    if length > MAX_TRANSFER_BUFFER {
+        Err(TransferResponse {
+            session_id: req_session,
+            device_id: req_device,
+            success: false,
+            data: Vec::new(),
+            bytes_transferred: 0,
+            error_message: Some(format!(
+                "Requested length {length} exceeds maximum {MAX_TRANSFER_BUFFER}"
+            )),
+        })
+    } else {
+        Ok(length as usize)
+    }
+}
+
 pub fn execute_control_transfer(
     handle: &DeviceHandle<Context>,
     req: &ControlTransferRequest,
@@ -80,7 +104,11 @@ pub fn execute_bulk_transfer(
     let direction_in = req.endpoint & 0x80 != 0;
 
     if direction_in {
-        let mut buf = vec![0u8; req.length as usize];
+        let len = match capped_length(req.length, req.session_id, req.device_id) {
+            Ok(l) => l,
+            Err(resp) => return resp,
+        };
+        let mut buf = vec![0u8; len];
         match handle.read_bulk(req.endpoint, &mut buf, timeout) {
             Ok(n) => {
                 buf.truncate(n);
@@ -132,7 +160,11 @@ pub fn execute_interrupt_transfer(
     let direction_in = req.endpoint & 0x80 != 0;
 
     if direction_in {
-        let mut buf = vec![0u8; req.length as usize];
+        let len = match capped_length(req.length, req.session_id, req.device_id) {
+            Ok(l) => l,
+            Err(resp) => return resp,
+        };
+        let mut buf = vec![0u8; len];
         match handle.read_interrupt(req.endpoint, &mut buf, timeout) {
             Ok(n) => {
                 buf.truncate(n);

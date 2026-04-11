@@ -55,6 +55,8 @@ pub struct HelloRequest {
     pub protocol_version: u32,
     pub client_name: String,
     pub auth_nonce: [u8; 32],
+    /// HMAC(key, nonce || "wolfusb-client") -- proves client knows the key
+    pub auth_proof: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Encode, Decode)]

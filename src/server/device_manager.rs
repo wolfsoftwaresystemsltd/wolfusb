@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::time::Duration;
+use std::sync::Arc;
 
 use log::{debug, info, warn};
 use rusb::{Context, DeviceHandle, UsbContext};
@@ -11,7 +11,7 @@ use crate::error::{Result, WolfUsbError};
 use crate::protocol::types::*;
 
 struct AttachmentInfo {
-    handle: DeviceHandle<Context>,
+    handle: Arc<DeviceHandle<Context>>,
     detached_kernel_drivers: Vec<u8>,
     claimed_interfaces: Vec<u8>,
     client_addr: SocketAddr,
@@ -53,14 +53,12 @@ impl DeviceManager {
                 address: device.address(),
             };
 
-            // Try to read string descriptors (requires opening the device)
+            // Try to read string descriptors with a timeout
             let (manufacturer, product, serial_number) = match device.open() {
                 Ok(handle) => {
-                    let timeout = Duration::from_millis(500);
-                    let mfr = handle.read_manufacturer_string_ascii(&desc).ok();
-                    let prod = handle.read_product_string_ascii(&desc).ok();
-                    let serial = handle.read_serial_number_string_ascii(&desc).ok();
-                    let _ = timeout; // used conceptually for context
+                    let mfr = read_string_desc(&handle, desc.manufacturer_string_index());
+                    let prod = read_string_desc(&handle, desc.product_string_index());
+                    let serial = read_string_desc(&handle, desc.serial_number_string_index());
                     (mfr, prod, serial)
                 }
                 Err(_) => (None, None, None),
@@ -101,9 +99,9 @@ impl DeviceManager {
 
         let (manufacturer, product, serial_number) = match device.open() {
             Ok(handle) => {
-                let mfr = handle.read_manufacturer_string_ascii(&desc).ok();
-                let prod = handle.read_product_string_ascii(&desc).ok();
-                let serial = handle.read_serial_number_string_ascii(&desc).ok();
+                let mfr = read_string_desc(&handle, desc.manufacturer_string_index());
+                let prod = read_string_desc(&handle, desc.product_string_index());
+                let serial = read_string_desc(&handle, desc.serial_number_string_index());
                 (mfr, prod, serial)
             }
             Err(_) => (None, None, None),
@@ -166,7 +164,7 @@ impl DeviceManager {
                         sub_class_code: setting.sub_class_code(),
                         protocol_code: setting.protocol_code(),
                         num_endpoints: setting.num_endpoints(),
-                        description: None, // Would need open handle + string desc index
+                        description: None,
                         endpoints,
                     });
                 }
@@ -198,7 +196,6 @@ impl DeviceManager {
         let handle = device.open()?;
 
         // Try to detach kernel drivers on all interfaces
-        let desc = device.device_descriptor()?;
         let mut detached_drivers = Vec::new();
 
         if let Ok(config) = device.active_config_descriptor() {
@@ -209,12 +206,8 @@ impl DeviceManager {
                         info!("Detached kernel driver from {device_id} interface {iface_num}");
                         detached_drivers.push(iface_num);
                     }
-                    Err(rusb::Error::NotSupported) => {
-                        // macOS/Windows: kernel driver detach not supported
-                    }
-                    Err(rusb::Error::NotFound) => {
-                        // No kernel driver was attached
-                    }
+                    Err(rusb::Error::NotSupported) => {}
+                    Err(rusb::Error::NotFound) => {}
                     Err(e) => {
                         warn!(
                             "Failed to detach kernel driver from {device_id} interface {iface_num}: {e}"
@@ -223,7 +216,6 @@ impl DeviceManager {
                 }
             }
         }
-        let _ = desc; // suppress unused warning
 
         let session_id = self.next_session_id;
         self.next_session_id += 1;
@@ -232,7 +224,7 @@ impl DeviceManager {
         self.attachments.insert(
             device_id,
             AttachmentInfo {
-                handle,
+                handle: Arc::new(handle),
                 detached_kernel_drivers: detached_drivers,
                 claimed_interfaces: Vec::new(),
                 client_addr,
@@ -318,10 +310,11 @@ impl DeviceManager {
         Ok(())
     }
 
-    pub fn get_handle(&self, device_id: DeviceId) -> Result<&DeviceHandle<Context>> {
+    /// Get a cloneable Arc handle for use in spawn_blocking.
+    pub fn get_handle(&self, device_id: DeviceId) -> Result<Arc<DeviceHandle<Context>>> {
         self.attachments
             .get(&device_id)
-            .map(|a| &a.handle)
+            .map(|a| Arc::clone(&a.handle))
             .ok_or(WolfUsbError::DeviceNotAttached)
     }
 
@@ -343,4 +336,12 @@ impl DeviceManager {
                 addr: device_id.address,
             })
     }
+}
+
+fn read_string_desc(handle: &DeviceHandle<Context>, index: Option<u8>) -> Option<String> {
+    let idx = index?;
+    if idx == 0 {
+        return None;
+    }
+    handle.read_string_descriptor_ascii(idx).ok()
 }

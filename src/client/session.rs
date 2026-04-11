@@ -25,11 +25,26 @@ impl Session {
         use rand::RngCore;
         rand::rng().fill_bytes(&mut auth_nonce);
 
+        // Compute client auth proof if we have a key
+        let auth_proof = if let Some(key) = shared_key {
+            use hmac::{Hmac, Mac};
+            use sha2::Sha256;
+
+            type HmacSha256 = Hmac<Sha256>;
+            let mut mac = HmacSha256::new_from_slice(key).expect("HMAC accepts any key length");
+            mac.update(&auth_nonce);
+            mac.update(b"wolfusb-client");
+            mac.finalize().into_bytes().to_vec()
+        } else {
+            Vec::new()
+        };
+
         // Send Hello
         let hello = Message::Hello(HelloRequest {
             protocol_version: PROTOCOL_VERSION,
             client_name: client_name.to_string(),
             auth_nonce,
+            auth_proof,
         });
         framed.send(hello).await?;
 
@@ -131,7 +146,11 @@ impl Session {
             .send_and_recv(Message::Attach(AttachRequest { device_id }))
             .await?;
         match response {
-            Message::AttachResult(resp) if resp.success => Ok(resp.session_id.unwrap()),
+            Message::AttachResult(resp) if resp.success => {
+                resp.session_id.ok_or(WolfUsbError::ProtocolError(
+                    "Server returned success but no session_id".to_string(),
+                ))
+            }
             Message::AttachResult(resp) => Err(WolfUsbError::ProtocolError(
                 resp.error_message
                     .unwrap_or_else(|| "Attach failed".to_string()),

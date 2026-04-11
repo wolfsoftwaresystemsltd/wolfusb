@@ -5,7 +5,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use futures::SinkExt;
-use log::{error, info};
+use log::{error, info, warn};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use tokio_util::codec::Framed;
@@ -119,55 +119,99 @@ impl Connection {
             });
         }
 
-        let (auth_accepted, challenge_response) = if let Some(ref key) = self.shared_key {
+        if let Some(ref key) = self.shared_key {
             use hmac::{Hmac, Mac};
             use sha2::Sha256;
 
             type HmacSha256 = Hmac<Sha256>;
-            let mut mac = HmacSha256::new_from_slice(key).expect("HMAC accepts any key length");
-            mac.update(&req.auth_nonce);
-            mac.update(b"wolfusb-server");
-            let result = mac.finalize().into_bytes().to_vec();
-            (true, result)
+
+            // Verify client proof: client must have computed HMAC(key, nonce || "wolfusb-client")
+            let mut client_mac =
+                HmacSha256::new_from_slice(key).expect("HMAC accepts any key length");
+            client_mac.update(&req.auth_nonce);
+            client_mac.update(b"wolfusb-client");
+
+            if client_mac.verify_slice(&req.auth_proof).is_err() {
+                warn!(
+                    "Authentication failed for {} (client: {})",
+                    self.peer_addr, req.client_name
+                );
+                return Message::HelloResponse(HelloResponse {
+                    protocol_version: PROTOCOL_VERSION,
+                    server_name: "wolfusb".to_string(),
+                    auth_accepted: false,
+                    auth_challenge_response: Vec::new(),
+                    error_message: Some("Authentication failed".to_string()),
+                });
+            }
+
+            // Server proof: so client can verify us too
+            let mut server_mac =
+                HmacSha256::new_from_slice(key).expect("HMAC accepts any key length");
+            server_mac.update(&req.auth_nonce);
+            server_mac.update(b"wolfusb-server");
+            let server_proof = server_mac.finalize().into_bytes().to_vec();
+
+            self.authenticated = true;
+            info!(
+                "Hello from {} (client: {}), auth=ok",
+                self.peer_addr, req.client_name
+            );
+
+            Message::HelloResponse(HelloResponse {
+                protocol_version: PROTOCOL_VERSION,
+                server_name: "wolfusb".to_string(),
+                auth_accepted: true,
+                auth_challenge_response: server_proof,
+                error_message: None,
+            })
         } else {
-            (true, Vec::new())
-        };
+            // No key configured -- open access
+            self.authenticated = true;
+            info!(
+                "Hello from {} (client: {}), auth=none",
+                self.peer_addr, req.client_name
+            );
 
-        self.authenticated = auth_accepted;
-        info!(
-            "Hello from {} (client: {}), auth={}",
-            self.peer_addr, req.client_name, auth_accepted
-        );
-
-        Message::HelloResponse(HelloResponse {
-            protocol_version: PROTOCOL_VERSION,
-            server_name: "wolfusb".to_string(),
-            auth_accepted,
-            auth_challenge_response: challenge_response,
-            error_message: None,
-        })
+            Message::HelloResponse(HelloResponse {
+                protocol_version: PROTOCOL_VERSION,
+                server_name: "wolfusb".to_string(),
+                auth_accepted: true,
+                auth_challenge_response: Vec::new(),
+                error_message: None,
+            })
+        }
     }
 
     async fn handle_list_devices(&self) -> Message {
-        let manager = self.device_manager.lock().await;
-        match manager.list_devices() {
-            Ok(devices) => Message::DeviceList(DeviceListResponse { devices }),
-            Err(e) => Message::Error(ErrorResponse {
+        let dm = self.device_manager.clone();
+        match tokio::task::spawn_blocking(move || dm.blocking_lock().list_devices()).await {
+            Ok(Ok(devices)) => Message::DeviceList(DeviceListResponse { devices }),
+            Ok(Err(e)) => Message::Error(ErrorResponse {
                 code: ErrorCode::UsbError,
+                message: e.to_string(),
+            }),
+            Err(e) => Message::Error(ErrorResponse {
+                code: ErrorCode::InternalError,
                 message: e.to_string(),
             }),
         }
     }
 
     async fn handle_get_descriptors(&self, req: GetDescriptorsRequest) -> Message {
-        let manager = self.device_manager.lock().await;
-        match manager.get_descriptors(req.device_id) {
-            Ok(descriptors) => Message::DescriptorData(DescriptorDataResponse {
+        let dm = self.device_manager.clone();
+        let did = req.device_id;
+        match tokio::task::spawn_blocking(move || dm.blocking_lock().get_descriptors(did)).await {
+            Ok(Ok(descriptors)) => Message::DescriptorData(DescriptorDataResponse {
                 device_id: req.device_id,
                 descriptors,
             }),
-            Err(e) => Message::Error(ErrorResponse {
+            Ok(Err(e)) => Message::Error(ErrorResponse {
                 code: ErrorCode::DeviceNotFound,
+                message: e.to_string(),
+            }),
+            Err(e) => Message::Error(ErrorResponse {
+                code: ErrorCode::InternalError,
                 message: e.to_string(),
             }),
         }
@@ -214,88 +258,74 @@ impl Connection {
     }
 
     async fn handle_control_transfer(&self, req: ControlTransferRequest) -> Message {
-        let manager = self.device_manager.lock().await;
-        if let Err(e) = manager.validate_session(req.session_id, req.device_id) {
-            return Message::TransferResult(TransferResponse {
-                session_id: req.session_id,
-                device_id: req.device_id,
-                success: false,
-                data: Vec::new(),
-                bytes_transferred: 0,
-                error_message: Some(e.to_string()),
-            });
-        }
-
-        match manager.get_handle(req.device_id) {
-            Ok(handle) => {
-                let resp = transfer::execute_control_transfer(handle, &req);
-                Message::TransferResult(resp)
+        // Validate session and get handle under lock, then drop lock before blocking USB call
+        let handle = {
+            let manager = self.device_manager.lock().await;
+            if let Err(e) = manager.validate_session(req.session_id, req.device_id) {
+                return transfer_error(&req.session_id, &req.device_id, e);
             }
-            Err(e) => Message::TransferResult(TransferResponse {
-                session_id: req.session_id,
-                device_id: req.device_id,
-                success: false,
-                data: Vec::new(),
-                bytes_transferred: 0,
-                error_message: Some(e.to_string()),
+            match manager.get_handle(req.device_id) {
+                Ok(h) => h,
+                Err(e) => return transfer_error(&req.session_id, &req.device_id, e),
+            }
+            // mutex dropped here
+        };
+
+        match tokio::task::spawn_blocking(move || transfer::execute_control_transfer(&handle, &req))
+            .await
+        {
+            Ok(resp) => Message::TransferResult(resp),
+            Err(e) => Message::Error(ErrorResponse {
+                code: ErrorCode::InternalError,
+                message: e.to_string(),
             }),
         }
     }
 
     async fn handle_bulk_transfer(&self, req: BulkTransferRequest) -> Message {
-        let manager = self.device_manager.lock().await;
-        if let Err(e) = manager.validate_session(req.session_id, req.device_id) {
-            return Message::TransferResult(TransferResponse {
-                session_id: req.session_id,
-                device_id: req.device_id,
-                success: false,
-                data: Vec::new(),
-                bytes_transferred: 0,
-                error_message: Some(e.to_string()),
-            });
-        }
-
-        match manager.get_handle(req.device_id) {
-            Ok(handle) => {
-                let resp = transfer::execute_bulk_transfer(handle, &req);
-                Message::TransferResult(resp)
+        let handle = {
+            let manager = self.device_manager.lock().await;
+            if let Err(e) = manager.validate_session(req.session_id, req.device_id) {
+                return transfer_error(&req.session_id, &req.device_id, e);
             }
-            Err(e) => Message::TransferResult(TransferResponse {
-                session_id: req.session_id,
-                device_id: req.device_id,
-                success: false,
-                data: Vec::new(),
-                bytes_transferred: 0,
-                error_message: Some(e.to_string()),
+            match manager.get_handle(req.device_id) {
+                Ok(h) => h,
+                Err(e) => return transfer_error(&req.session_id, &req.device_id, e),
+            }
+        };
+
+        match tokio::task::spawn_blocking(move || transfer::execute_bulk_transfer(&handle, &req))
+            .await
+        {
+            Ok(resp) => Message::TransferResult(resp),
+            Err(e) => Message::Error(ErrorResponse {
+                code: ErrorCode::InternalError,
+                message: e.to_string(),
             }),
         }
     }
 
     async fn handle_interrupt_transfer(&self, req: InterruptTransferRequest) -> Message {
-        let manager = self.device_manager.lock().await;
-        if let Err(e) = manager.validate_session(req.session_id, req.device_id) {
-            return Message::TransferResult(TransferResponse {
-                session_id: req.session_id,
-                device_id: req.device_id,
-                success: false,
-                data: Vec::new(),
-                bytes_transferred: 0,
-                error_message: Some(e.to_string()),
-            });
-        }
-
-        match manager.get_handle(req.device_id) {
-            Ok(handle) => {
-                let resp = transfer::execute_interrupt_transfer(handle, &req);
-                Message::TransferResult(resp)
+        let handle = {
+            let manager = self.device_manager.lock().await;
+            if let Err(e) = manager.validate_session(req.session_id, req.device_id) {
+                return transfer_error(&req.session_id, &req.device_id, e);
             }
-            Err(e) => Message::TransferResult(TransferResponse {
-                session_id: req.session_id,
-                device_id: req.device_id,
-                success: false,
-                data: Vec::new(),
-                bytes_transferred: 0,
-                error_message: Some(e.to_string()),
+            match manager.get_handle(req.device_id) {
+                Ok(h) => h,
+                Err(e) => return transfer_error(&req.session_id, &req.device_id, e),
+            }
+        };
+
+        match tokio::task::spawn_blocking(move || {
+            transfer::execute_interrupt_transfer(&handle, &req)
+        })
+        .await
+        {
+            Ok(resp) => Message::TransferResult(resp),
+            Err(e) => Message::Error(ErrorResponse {
+                code: ErrorCode::InternalError,
+                message: e.to_string(),
             }),
         }
     }
@@ -377,4 +407,19 @@ impl Connection {
             self.peer_addr
         );
     }
+}
+
+fn transfer_error(
+    session_id: &u64,
+    device_id: &DeviceId,
+    e: crate::error::WolfUsbError,
+) -> Message {
+    Message::TransferResult(TransferResponse {
+        session_id: *session_id,
+        device_id: *device_id,
+        success: false,
+        data: Vec::new(),
+        bytes_transferred: 0,
+        error_message: Some(e.to_string()),
+    })
 }

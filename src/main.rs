@@ -188,24 +188,21 @@ enum Commands {
     },
 }
 
+/// Parse a value that may be hex (0x prefix) or decimal.
 fn parse_u8_hex(s: &str) -> anyhow::Result<u8> {
-    let s = s
-        .strip_prefix("0x")
-        .or_else(|| s.strip_prefix("0X"))
-        .unwrap_or(s);
-    u8::from_str_radix(s, 16)
-        .or_else(|_| s.parse::<u8>())
-        .map_err(Into::into)
+    if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        Ok(u8::from_str_radix(hex, 16)?)
+    } else {
+        Ok(s.parse::<u8>()?)
+    }
 }
 
 fn parse_u16_hex(s: &str) -> anyhow::Result<u16> {
-    let s = s
-        .strip_prefix("0x")
-        .or_else(|| s.strip_prefix("0X"))
-        .unwrap_or(s);
-    u16::from_str_radix(s, 16)
-        .or_else(|_| s.parse::<u16>())
-        .map_err(Into::into)
+    if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        Ok(u16::from_str_radix(hex, 16)?)
+    } else {
+        Ok(s.parse::<u16>()?)
+    }
 }
 
 #[tokio::main]

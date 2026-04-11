@@ -201,8 +201,11 @@ fn format_class(class: u8, subclass: u8) -> &'static str {
 }
 
 pub fn parse_hex_data(hex_str: &str) -> anyhow::Result<Vec<u8>> {
-    let hex_str = hex_str.replace([' ', ':'], "");
-    let hex_str = hex_str.strip_prefix("0x").unwrap_or(&hex_str);
+    // Strip all whitespace, colons, and per-byte "0x" prefixes
+    let hex_str: String = hex_str
+        .replace([' ', ':', '\t'], "")
+        .replace("0x", "")
+        .replace("0X", "");
 
     if !hex_str.len().is_multiple_of(2) {
         anyhow::bail!("Hex string must have even number of characters");
