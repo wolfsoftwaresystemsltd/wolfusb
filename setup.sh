@@ -215,9 +215,9 @@ main() {
     # Download
     local archive_name="wolfusb-${VERSION}-${target}.${ext}"
     local download_url="https://github.com/${REPO}/releases/download/${VERSION}/${archive_name}"
-    local tmpdir
-    tmpdir=$(mktemp -d)
-    trap 'rm -rf "$tmpdir"' EXIT
+    WOLFUSB_TMPDIR=$(mktemp -d)
+    trap 'rm -rf "$WOLFUSB_TMPDIR"' EXIT
+    local tmpdir="$WOLFUSB_TMPDIR"
 
     download "$download_url" "${tmpdir}/${archive_name}"
 
