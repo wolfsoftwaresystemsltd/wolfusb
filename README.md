@@ -1,5 +1,10 @@
 # wolfusb
 
+[![Sponsor](https://img.shields.io/badge/Sponsor-%E2%9D%A4-pink?style=for-the-badge&logo=github)](https://github.com/sponsors/wolfsoftwaresystemsltd)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)](LICENSE)
+[![CI](https://img.shields.io/github/actions/workflow/status/wolfsoftwaresystemsltd/wolfusb/ci.yml?style=for-the-badge&label=CI)](https://github.com/wolfsoftwaresystemsltd/wolfusb/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/wolfsoftwaresystemsltd/wolfusb?style=for-the-badge)](https://github.com/wolfsoftwaresystemsltd/wolfusb/releases/latest)
+
 Share USB devices over IP. A server exposes locally connected USB devices over TCP, and clients on any machine perform remote USB operations -- listing, attaching, and executing control, bulk, and interrupt transfers.
 
 ## Installation
@@ -452,10 +457,6 @@ src/
 | Requires root/admin | No (with udev rules) | No (usually) | No (with WinUSB) |
 
 On macOS and Windows, `detach_kernel_driver` failures are handled gracefully -- the operation is skipped without error.
-
-## Sponsorship
-
-If you find wolfusb useful, please consider [sponsoring the project](https://github.com/sponsors/wolfsoftwaresystemsltd) to support continued development.
 
 ## License
 
