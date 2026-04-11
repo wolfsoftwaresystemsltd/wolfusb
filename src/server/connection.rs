@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use futures::SinkExt;
+use futures::{SinkExt, StreamExt};
 use log::{error, info, warn};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
@@ -15,8 +15,6 @@ use super::transfer;
 use crate::protocol::codec::WolfUsbCodec;
 use crate::protocol::messages::*;
 use crate::protocol::types::DeviceId;
-
-use futures::StreamExt;
 
 pub struct Connection {
     framed: Framed<TcpStream, WolfUsbCodec>,
@@ -70,7 +68,6 @@ impl Connection {
             }
         }
 
-        // Cleanup: detach all devices held by this connection
         self.cleanup().await;
     }
 
@@ -79,7 +76,6 @@ impl Connection {
             Message::Hello(req) => Some(self.handle_hello(req)),
             Message::Ping => Some(Message::Pong),
 
-            // All other messages require authentication (if key is set)
             _ if self.shared_key.is_some() && !self.authenticated => {
                 Some(Message::Error(ErrorResponse {
                     code: ErrorCode::AuthenticationFailed,
@@ -125,7 +121,7 @@ impl Connection {
 
             type HmacSha256 = Hmac<Sha256>;
 
-            // Verify client proof: client must have computed HMAC(key, nonce || "wolfusb-client")
+            // Verify client proof
             let mut client_mac =
                 HmacSha256::new_from_slice(key).expect("HMAC accepts any key length");
             client_mac.update(&req.auth_nonce);
@@ -145,7 +141,7 @@ impl Connection {
                 });
             }
 
-            // Server proof: so client can verify us too
+            // Server proof so client can verify us
             let mut server_mac =
                 HmacSha256::new_from_slice(key).expect("HMAC accepts any key length");
             server_mac.update(&req.auth_nonce);
@@ -166,7 +162,6 @@ impl Connection {
                 error_message: None,
             })
         } else {
-            // No key configured -- open access
             self.authenticated = true;
             info!(
                 "Hello from {} (client: {}), auth=none",
@@ -218,9 +213,11 @@ impl Connection {
     }
 
     async fn handle_attach(&mut self, req: AttachRequest) -> Message {
-        let mut manager = self.device_manager.lock().await;
-        match manager.attach(req.device_id, self.peer_addr) {
-            Ok(session_id) => {
+        let dm = self.device_manager.clone();
+        let did = req.device_id;
+        let addr = self.peer_addr;
+        match tokio::task::spawn_blocking(move || dm.blocking_lock().attach(did, addr)).await {
+            Ok(Ok(session_id)) => {
                 self.sessions.insert(session_id, req.device_id);
                 Message::AttachResult(AttachResponse {
                     device_id: req.device_id,
@@ -229,6 +226,12 @@ impl Connection {
                     session_id: Some(session_id),
                 })
             }
+            Ok(Err(e)) => Message::AttachResult(AttachResponse {
+                device_id: req.device_id,
+                success: false,
+                error_message: Some(e.to_string()),
+                session_id: None,
+            }),
             Err(e) => Message::AttachResult(AttachResponse {
                 device_id: req.device_id,
                 success: false,
@@ -239,14 +242,34 @@ impl Connection {
     }
 
     async fn handle_detach(&mut self, req: DetachRequest) -> Message {
-        let mut manager = self.device_manager.lock().await;
-        match manager.detach(req.device_id, req.session_id) {
-            Ok(()) => {
+        // Verify this session belongs to this connection
+        if !self.sessions.contains_key(&req.session_id) {
+            return Message::DetachResult(DetachResponse {
+                device_id: req.device_id,
+                success: false,
+                error_message: Some("Session does not belong to this connection".to_string()),
+            });
+        }
+
+        let dm = self.device_manager.clone();
+        let did = req.device_id;
+        let sid = req.session_id;
+        match tokio::task::spawn_blocking(move || dm.blocking_lock().detach(did, sid)).await {
+            Ok(Ok(())) => {
                 self.sessions.remove(&req.session_id);
                 Message::DetachResult(DetachResponse {
                     device_id: req.device_id,
                     success: true,
                     error_message: None,
+                })
+            }
+            Ok(Err(e)) => {
+                // Clean up stale session even on error
+                self.sessions.remove(&req.session_id);
+                Message::DetachResult(DetachResponse {
+                    device_id: req.device_id,
+                    success: false,
+                    error_message: Some(e.to_string()),
                 })
             }
             Err(e) => Message::DetachResult(DetachResponse {
@@ -258,17 +281,19 @@ impl Connection {
     }
 
     async fn handle_control_transfer(&self, req: ControlTransferRequest) -> Message {
-        // Validate session and get handle under lock, then drop lock before blocking USB call
+        if !self.sessions.contains_key(&req.session_id) {
+            return transfer_error(&req.session_id, &req.device_id, "Invalid session");
+        }
+
         let handle = {
             let manager = self.device_manager.lock().await;
             if let Err(e) = manager.validate_session(req.session_id, req.device_id) {
-                return transfer_error(&req.session_id, &req.device_id, e);
+                return transfer_error(&req.session_id, &req.device_id, &e.to_string());
             }
             match manager.get_handle(req.device_id) {
                 Ok(h) => h,
-                Err(e) => return transfer_error(&req.session_id, &req.device_id, e),
+                Err(e) => return transfer_error(&req.session_id, &req.device_id, &e.to_string()),
             }
-            // mutex dropped here
         };
 
         match tokio::task::spawn_blocking(move || transfer::execute_control_transfer(&handle, &req))
@@ -283,14 +308,18 @@ impl Connection {
     }
 
     async fn handle_bulk_transfer(&self, req: BulkTransferRequest) -> Message {
+        if !self.sessions.contains_key(&req.session_id) {
+            return transfer_error(&req.session_id, &req.device_id, "Invalid session");
+        }
+
         let handle = {
             let manager = self.device_manager.lock().await;
             if let Err(e) = manager.validate_session(req.session_id, req.device_id) {
-                return transfer_error(&req.session_id, &req.device_id, e);
+                return transfer_error(&req.session_id, &req.device_id, &e.to_string());
             }
             match manager.get_handle(req.device_id) {
                 Ok(h) => h,
-                Err(e) => return transfer_error(&req.session_id, &req.device_id, e),
+                Err(e) => return transfer_error(&req.session_id, &req.device_id, &e.to_string()),
             }
         };
 
@@ -306,14 +335,18 @@ impl Connection {
     }
 
     async fn handle_interrupt_transfer(&self, req: InterruptTransferRequest) -> Message {
+        if !self.sessions.contains_key(&req.session_id) {
+            return transfer_error(&req.session_id, &req.device_id, "Invalid session");
+        }
+
         let handle = {
             let manager = self.device_manager.lock().await;
             if let Err(e) = manager.validate_session(req.session_id, req.device_id) {
-                return transfer_error(&req.session_id, &req.device_id, e);
+                return transfer_error(&req.session_id, &req.device_id, &e.to_string());
             }
             match manager.get_handle(req.device_id) {
                 Ok(h) => h,
-                Err(e) => return transfer_error(&req.session_id, &req.device_id, e),
+                Err(e) => return transfer_error(&req.session_id, &req.device_id, &e.to_string()),
             }
         };
 
@@ -331,18 +364,26 @@ impl Connection {
     }
 
     async fn handle_claim_interface(&self, req: ClaimInterfaceRequest) -> Message {
-        let mut manager = self.device_manager.lock().await;
-        if let Err(e) = manager.validate_session(req.session_id, req.device_id) {
+        if !self.sessions.contains_key(&req.session_id) {
             return Message::ClaimInterfaceResult(ClaimInterfaceResponse {
                 success: false,
-                error_message: Some(e.to_string()),
+                error_message: Some("Invalid session".to_string()),
             });
         }
 
-        match manager.claim_interface(req.device_id, req.interface_number) {
-            Ok(()) => Message::ClaimInterfaceResult(ClaimInterfaceResponse {
+        let dm = self.device_manager.clone();
+        let did = req.device_id;
+        let iface = req.interface_number;
+        match tokio::task::spawn_blocking(move || dm.blocking_lock().claim_interface(did, iface))
+            .await
+        {
+            Ok(Ok(())) => Message::ClaimInterfaceResult(ClaimInterfaceResponse {
                 success: true,
                 error_message: None,
+            }),
+            Ok(Err(e)) => Message::ClaimInterfaceResult(ClaimInterfaceResponse {
+                success: false,
+                error_message: Some(e.to_string()),
             }),
             Err(e) => Message::ClaimInterfaceResult(ClaimInterfaceResponse {
                 success: false,
@@ -352,18 +393,26 @@ impl Connection {
     }
 
     async fn handle_release_interface(&self, req: ReleaseInterfaceRequest) -> Message {
-        let mut manager = self.device_manager.lock().await;
-        if let Err(e) = manager.validate_session(req.session_id, req.device_id) {
+        if !self.sessions.contains_key(&req.session_id) {
             return Message::ReleaseInterfaceResult(ReleaseInterfaceResponse {
                 success: false,
-                error_message: Some(e.to_string()),
+                error_message: Some("Invalid session".to_string()),
             });
         }
 
-        match manager.release_interface(req.device_id, req.interface_number) {
-            Ok(()) => Message::ReleaseInterfaceResult(ReleaseInterfaceResponse {
+        let dm = self.device_manager.clone();
+        let did = req.device_id;
+        let iface = req.interface_number;
+        match tokio::task::spawn_blocking(move || dm.blocking_lock().release_interface(did, iface))
+            .await
+        {
+            Ok(Ok(())) => Message::ReleaseInterfaceResult(ReleaseInterfaceResponse {
                 success: true,
                 error_message: None,
+            }),
+            Ok(Err(e)) => Message::ReleaseInterfaceResult(ReleaseInterfaceResponse {
+                success: false,
+                error_message: Some(e.to_string()),
             }),
             Err(e) => Message::ReleaseInterfaceResult(ReleaseInterfaceResponse {
                 success: false,
@@ -373,18 +422,26 @@ impl Connection {
     }
 
     async fn handle_set_configuration(&self, req: SetConfigurationRequest) -> Message {
-        let mut manager = self.device_manager.lock().await;
-        if let Err(e) = manager.validate_session(req.session_id, req.device_id) {
+        if !self.sessions.contains_key(&req.session_id) {
             return Message::SetConfigurationResult(SetConfigurationResponse {
                 success: false,
-                error_message: Some(e.to_string()),
+                error_message: Some("Invalid session".to_string()),
             });
         }
 
-        match manager.set_configuration(req.device_id, req.configuration) {
-            Ok(()) => Message::SetConfigurationResult(SetConfigurationResponse {
+        let dm = self.device_manager.clone();
+        let did = req.device_id;
+        let config = req.configuration;
+        match tokio::task::spawn_blocking(move || dm.blocking_lock().set_configuration(did, config))
+            .await
+        {
+            Ok(Ok(())) => Message::SetConfigurationResult(SetConfigurationResponse {
                 success: true,
                 error_message: None,
+            }),
+            Ok(Err(e)) => Message::SetConfigurationResult(SetConfigurationResponse {
+                success: false,
+                error_message: Some(e.to_string()),
             }),
             Err(e) => Message::SetConfigurationResult(SetConfigurationResponse {
                 success: false,
@@ -398,28 +455,24 @@ impl Connection {
             return;
         }
         let session_ids: Vec<u64> = self.sessions.keys().copied().collect();
-        let mut manager = self.device_manager.lock().await;
-        manager.detach_all_for_sessions(&session_ids);
+        let dm = self.device_manager.clone();
+        tokio::task::spawn_blocking(move || {
+            dm.blocking_lock().detach_all_for_sessions(&session_ids);
+        })
+        .await
+        .ok();
         self.sessions.clear();
-        info!(
-            "Cleaned up {} sessions for {}",
-            session_ids.len(),
-            self.peer_addr
-        );
+        info!("Cleaned up sessions for {}", self.peer_addr);
     }
 }
 
-fn transfer_error(
-    session_id: &u64,
-    device_id: &DeviceId,
-    e: crate::error::WolfUsbError,
-) -> Message {
+fn transfer_error(session_id: &u64, device_id: &DeviceId, msg: &str) -> Message {
     Message::TransferResult(TransferResponse {
         session_id: *session_id,
         device_id: *device_id,
         success: false,
         data: Vec::new(),
         bytes_transferred: 0,
-        error_message: Some(e.to_string()),
+        error_message: Some(msg.to_string()),
     })
 }

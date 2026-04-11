@@ -9,6 +9,13 @@ use crate::protocol::messages::*;
 /// Maximum buffer size for a single transfer (16 MiB).
 const MAX_TRANSFER_BUFFER: u32 = 16 * 1024 * 1024;
 
+/// Minimum timeout to prevent infinite blocking (rusb treats 0 as infinite).
+const MIN_TIMEOUT_MS: u64 = 1;
+
+fn safe_timeout(timeout_ms: u64) -> Duration {
+    Duration::from_millis(timeout_ms.max(MIN_TIMEOUT_MS))
+}
+
 fn capped_length(
     length: u32,
     req_session: u64,
@@ -34,7 +41,7 @@ pub fn execute_control_transfer(
     handle: &DeviceHandle<Context>,
     req: &ControlTransferRequest,
 ) -> TransferResponse {
-    let timeout = Duration::from_millis(req.timeout_ms);
+    let timeout = safe_timeout(req.timeout_ms);
     let direction_in = req.request_type & 0x80 != 0;
 
     if direction_in {
@@ -100,7 +107,7 @@ pub fn execute_bulk_transfer(
     handle: &DeviceHandle<Context>,
     req: &BulkTransferRequest,
 ) -> TransferResponse {
-    let timeout = Duration::from_millis(req.timeout_ms);
+    let timeout = safe_timeout(req.timeout_ms);
     let direction_in = req.endpoint & 0x80 != 0;
 
     if direction_in {
@@ -156,7 +163,7 @@ pub fn execute_interrupt_transfer(
     handle: &DeviceHandle<Context>,
     req: &InterruptTransferRequest,
 ) -> TransferResponse {
-    let timeout = Duration::from_millis(req.timeout_ms);
+    let timeout = safe_timeout(req.timeout_ms);
     let direction_in = req.endpoint & 0x80 != 0;
 
     if direction_in {

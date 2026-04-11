@@ -173,9 +173,9 @@ impl DeviceManager {
             configurations.push(ConfigurationInfo {
                 number: config.number(),
                 num_interfaces: config.num_interfaces(),
-                max_power_ma: config.max_power() as u16 * 2,
-                self_powered: false,
-                remote_wakeup: false,
+                max_power_ma: config.max_power() as u16,
+                self_powered: config.self_powered(),
+                remote_wakeup: config.remote_wakeup(),
                 description: None,
                 interfaces,
             });
