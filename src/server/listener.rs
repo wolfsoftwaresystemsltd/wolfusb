@@ -10,11 +10,7 @@ use super::connection::Connection;
 use super::device_manager::DeviceManager;
 use crate::error::Result;
 
-pub async fn run_server(
-    bind_addr: &str,
-    port: u16,
-    shared_key: Option<Vec<u8>>,
-) -> Result<()> {
+pub async fn run_server(bind_addr: &str, port: u16, shared_key: Option<Vec<u8>>) -> Result<()> {
     let device_manager = Arc::new(Mutex::new(DeviceManager::new()?));
     let addr = format!("{bind_addr}:{port}");
     let listener = TcpListener::bind(&addr).await?;

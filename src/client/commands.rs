@@ -13,11 +13,7 @@ pub async fn cmd_list(session: &mut Session) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub async fn cmd_info(
-    session: &mut Session,
-    bus: u8,
-    addr: u8,
-) -> anyhow::Result<()> {
+pub async fn cmd_info(session: &mut Session, bus: u8, addr: u8) -> anyhow::Result<()> {
     let device_id = DeviceId {
         bus_number: bus,
         address: addr,
@@ -27,11 +23,7 @@ pub async fn cmd_info(
     Ok(())
 }
 
-pub async fn cmd_attach(
-    session: &mut Session,
-    bus: u8,
-    addr: u8,
-) -> anyhow::Result<()> {
+pub async fn cmd_attach(session: &mut Session, bus: u8, addr: u8) -> anyhow::Result<()> {
     let device_id = DeviceId {
         bus_number: bus,
         address: addr,

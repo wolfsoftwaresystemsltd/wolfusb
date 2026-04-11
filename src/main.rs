@@ -189,19 +189,28 @@ enum Commands {
 }
 
 fn parse_u8_hex(s: &str) -> anyhow::Result<u8> {
-    let s = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")).unwrap_or(s);
-    u8::from_str_radix(s, 16).or_else(|_| s.parse::<u8>()).map_err(Into::into)
+    let s = s
+        .strip_prefix("0x")
+        .or_else(|| s.strip_prefix("0X"))
+        .unwrap_or(s);
+    u8::from_str_radix(s, 16)
+        .or_else(|_| s.parse::<u8>())
+        .map_err(Into::into)
 }
 
 fn parse_u16_hex(s: &str) -> anyhow::Result<u16> {
-    let s = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")).unwrap_or(s);
-    u16::from_str_radix(s, 16).or_else(|_| s.parse::<u16>()).map_err(Into::into)
+    let s = s
+        .strip_prefix("0x")
+        .or_else(|| s.strip_prefix("0X"))
+        .unwrap_or(s);
+    u16::from_str_radix(s, 16)
+        .or_else(|_| s.parse::<u16>())
+        .map_err(Into::into)
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
-        .init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     let cli = Cli::parse();
 
@@ -256,8 +265,7 @@ async fn main() -> anyhow::Result<()> {
             let mut session =
                 wolfusb::client::session::Session::connect(&server, "wolfusb-cli", key_bytes)
                     .await?;
-            wolfusb::client::commands::cmd_detach(&mut session, bus, addr, session_id)
-                .await?;
+            wolfusb::client::commands::cmd_detach(&mut session, bus, addr, session_id).await?;
         }
 
         Commands::Control {

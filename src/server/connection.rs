@@ -88,29 +88,15 @@ impl Connection {
             }
 
             Message::ListDevices => Some(self.handle_list_devices().await),
-            Message::GetDescriptors(req) => {
-                Some(self.handle_get_descriptors(req).await)
-            }
+            Message::GetDescriptors(req) => Some(self.handle_get_descriptors(req).await),
             Message::Attach(req) => Some(self.handle_attach(req).await),
             Message::Detach(req) => Some(self.handle_detach(req).await),
-            Message::ControlTransfer(req) => {
-                Some(self.handle_control_transfer(req).await)
-            }
-            Message::BulkTransfer(req) => {
-                Some(self.handle_bulk_transfer(req).await)
-            }
-            Message::InterruptTransfer(req) => {
-                Some(self.handle_interrupt_transfer(req).await)
-            }
-            Message::ClaimInterface(req) => {
-                Some(self.handle_claim_interface(req).await)
-            }
-            Message::ReleaseInterface(req) => {
-                Some(self.handle_release_interface(req).await)
-            }
-            Message::SetConfiguration(req) => {
-                Some(self.handle_set_configuration(req).await)
-            }
+            Message::ControlTransfer(req) => Some(self.handle_control_transfer(req).await),
+            Message::BulkTransfer(req) => Some(self.handle_bulk_transfer(req).await),
+            Message::InterruptTransfer(req) => Some(self.handle_interrupt_transfer(req).await),
+            Message::ClaimInterface(req) => Some(self.handle_claim_interface(req).await),
+            Message::ReleaseInterface(req) => Some(self.handle_release_interface(req).await),
+            Message::SetConfiguration(req) => Some(self.handle_set_configuration(req).await),
 
             _ => Some(Message::Error(ErrorResponse {
                 code: ErrorCode::InternalError,
@@ -133,21 +119,19 @@ impl Connection {
             });
         }
 
-        let (auth_accepted, challenge_response) =
-            if let Some(ref key) = self.shared_key {
-                use hmac::{Hmac, Mac};
-                use sha2::Sha256;
+        let (auth_accepted, challenge_response) = if let Some(ref key) = self.shared_key {
+            use hmac::{Hmac, Mac};
+            use sha2::Sha256;
 
-                type HmacSha256 = Hmac<Sha256>;
-                let mut mac =
-                    HmacSha256::new_from_slice(key).expect("HMAC accepts any key length");
-                mac.update(&req.auth_nonce);
-                mac.update(b"wolfusb-server");
-                let result = mac.finalize().into_bytes().to_vec();
-                (true, result)
-            } else {
-                (true, Vec::new())
-            };
+            type HmacSha256 = Hmac<Sha256>;
+            let mut mac = HmacSha256::new_from_slice(key).expect("HMAC accepts any key length");
+            mac.update(&req.auth_nonce);
+            mac.update(b"wolfusb-server");
+            let result = mac.finalize().into_bytes().to_vec();
+            (true, result)
+        } else {
+            (true, Vec::new())
+        };
 
         self.authenticated = auth_accepted;
         info!(
@@ -287,10 +271,7 @@ impl Connection {
         }
     }
 
-    async fn handle_interrupt_transfer(
-        &self,
-        req: InterruptTransferRequest,
-    ) -> Message {
+    async fn handle_interrupt_transfer(&self, req: InterruptTransferRequest) -> Message {
         let manager = self.device_manager.lock().await;
         if let Err(e) = manager.validate_session(req.session_id, req.device_id) {
             return Message::TransferResult(TransferResponse {
@@ -390,6 +371,10 @@ impl Connection {
         let mut manager = self.device_manager.lock().await;
         manager.detach_all_for_sessions(&session_ids);
         self.sessions.clear();
-        info!("Cleaned up {} sessions for {}", session_ids.len(), self.peer_addr);
+        info!(
+            "Cleaned up {} sessions for {}",
+            session_ids.len(),
+            self.peer_addr
+        );
     }
 }

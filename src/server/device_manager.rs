@@ -54,24 +54,17 @@ impl DeviceManager {
             };
 
             // Try to read string descriptors (requires opening the device)
-            let (manufacturer, product, serial_number) =
-                match device.open() {
-                    Ok(handle) => {
-                        let timeout = Duration::from_millis(500);
-                        let mfr = handle
-                            .read_manufacturer_string_ascii(&desc)
-                            .ok();
-                        let prod = handle
-                            .read_product_string_ascii(&desc)
-                            .ok();
-                        let serial = handle
-                            .read_serial_number_string_ascii(&desc)
-                            .ok();
-                        let _ = timeout; // used conceptually for context
-                        (mfr, prod, serial)
-                    }
-                    Err(_) => (None, None, None),
-                };
+            let (manufacturer, product, serial_number) = match device.open() {
+                Ok(handle) => {
+                    let timeout = Duration::from_millis(500);
+                    let mfr = handle.read_manufacturer_string_ascii(&desc).ok();
+                    let prod = handle.read_product_string_ascii(&desc).ok();
+                    let serial = handle.read_serial_number_string_ascii(&desc).ok();
+                    let _ = timeout; // used conceptually for context
+                    (mfr, prod, serial)
+                }
+                Err(_) => (None, None, None),
+            };
 
             let version = desc.usb_version();
             let dev_version = desc.device_version();
@@ -196,11 +189,7 @@ impl DeviceManager {
         })
     }
 
-    pub fn attach(
-        &mut self,
-        device_id: DeviceId,
-        client_addr: SocketAddr,
-    ) -> Result<u64> {
+    pub fn attach(&mut self, device_id: DeviceId, client_addr: SocketAddr) -> Result<u64> {
         if self.attachments.contains_key(&device_id) {
             return Err(WolfUsbError::DeviceAlreadyAttached);
         }
@@ -217,9 +206,7 @@ impl DeviceManager {
                 let iface_num = iface.number();
                 match handle.detach_kernel_driver(iface_num) {
                     Ok(()) => {
-                        info!(
-                            "Detached kernel driver from {device_id} interface {iface_num}"
-                        );
+                        info!("Detached kernel driver from {device_id} interface {iface_num}");
                         detached_drivers.push(iface_num);
                     }
                     Err(rusb::Error::NotSupported) => {
@@ -272,9 +259,7 @@ impl DeviceManager {
         // Reattach kernel drivers
         for iface_num in &attachment.detached_kernel_drivers {
             if let Err(e) = attachment.handle.attach_kernel_driver(*iface_num) {
-                warn!(
-                    "Failed to reattach kernel driver on {device_id} interface {iface_num}: {e}"
-                );
+                warn!("Failed to reattach kernel driver on {device_id} interface {iface_num}: {e}");
             }
         }
 
@@ -296,11 +281,7 @@ impl DeviceManager {
         }
     }
 
-    pub fn claim_interface(
-        &mut self,
-        device_id: DeviceId,
-        interface_number: u8,
-    ) -> Result<()> {
+    pub fn claim_interface(&mut self, device_id: DeviceId, interface_number: u8) -> Result<()> {
         let attachment = self
             .attachments
             .get_mut(&device_id)
@@ -312,11 +293,7 @@ impl DeviceManager {
         Ok(())
     }
 
-    pub fn release_interface(
-        &mut self,
-        device_id: DeviceId,
-        interface_number: u8,
-    ) -> Result<()> {
+    pub fn release_interface(&mut self, device_id: DeviceId, interface_number: u8) -> Result<()> {
         let attachment = self
             .attachments
             .get_mut(&device_id)
@@ -330,11 +307,7 @@ impl DeviceManager {
         Ok(())
     }
 
-    pub fn set_configuration(
-        &mut self,
-        device_id: DeviceId,
-        configuration: u8,
-    ) -> Result<()> {
+    pub fn set_configuration(&mut self, device_id: DeviceId, configuration: u8) -> Result<()> {
         let attachment = self
             .attachments
             .get_mut(&device_id)
@@ -345,10 +318,7 @@ impl DeviceManager {
         Ok(())
     }
 
-    pub fn get_handle(
-        &self,
-        device_id: DeviceId,
-    ) -> Result<&DeviceHandle<Context>> {
+    pub fn get_handle(&self, device_id: DeviceId) -> Result<&DeviceHandle<Context>> {
         self.attachments
             .get(&device_id)
             .map(|a| &a.handle)
@@ -363,17 +333,11 @@ impl DeviceManager {
         }
     }
 
-    fn find_device(
-        &self,
-        device_id: DeviceId,
-    ) -> Result<rusb::Device<Context>> {
+    fn find_device(&self, device_id: DeviceId) -> Result<rusb::Device<Context>> {
         let devices = self.context.devices()?;
         devices
             .iter()
-            .find(|d| {
-                d.bus_number() == device_id.bus_number
-                    && d.address() == device_id.address
-            })
+            .find(|d| d.bus_number() == device_id.bus_number && d.address() == device_id.address)
             .ok_or(WolfUsbError::DeviceNotFound {
                 bus: device_id.bus_number,
                 addr: device_id.address,

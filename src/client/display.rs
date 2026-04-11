@@ -43,8 +43,14 @@ pub fn print_device_list(devices: &[DeviceInfo]) {
 
 pub fn print_descriptor_tree(tree: &DeviceDescriptorTree) {
     let dev = &tree.device;
-    println!("Device: {}:{}", dev.device_id.bus_number, dev.device_id.address);
-    println!("  VID:PID:        {:04x}:{:04x}", dev.vendor_id, dev.product_id);
+    println!(
+        "Device: {}:{}",
+        dev.device_id.bus_number, dev.device_id.address
+    );
+    println!(
+        "  VID:PID:        {:04x}:{:04x}",
+        dev.vendor_id, dev.product_id
+    );
     println!(
         "  USB Version:    {}.{}.{}",
         dev.usb_version.0, dev.usb_version.1, dev.usb_version.2

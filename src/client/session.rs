@@ -16,11 +16,7 @@ pub struct Session {
 }
 
 impl Session {
-    pub async fn connect(
-        addr: &str,
-        client_name: &str,
-        shared_key: Option<&[u8]>,
-    ) -> Result<Self> {
+    pub async fn connect(addr: &str, client_name: &str, shared_key: Option<&[u8]>) -> Result<Self> {
         let stream = TcpStream::connect(addr).await?;
         let mut framed = Framed::new(stream, WolfUsbCodec);
 
@@ -50,7 +46,7 @@ impl Session {
                 return Err(WolfUsbError::UnexpectedMessage {
                     expected: "HelloResponse".to_string(),
                     got: format!("{response:?}"),
-                })
+                });
             }
         };
 
@@ -68,8 +64,7 @@ impl Session {
             use sha2::Sha256;
 
             type HmacSha256 = Hmac<Sha256>;
-            let mut mac =
-                HmacSha256::new_from_slice(key).expect("HMAC accepts any key length");
+            let mut mac = HmacSha256::new_from_slice(key).expect("HMAC accepts any key length");
             mac.update(&auth_nonce);
             mac.update(b"wolfusb-server");
             if mac
@@ -117,14 +112,9 @@ impl Session {
         }
     }
 
-    pub async fn get_descriptors(
-        &mut self,
-        device_id: DeviceId,
-    ) -> Result<DeviceDescriptorTree> {
+    pub async fn get_descriptors(&mut self, device_id: DeviceId) -> Result<DeviceDescriptorTree> {
         let response = self
-            .send_and_recv(Message::GetDescriptors(GetDescriptorsRequest {
-                device_id,
-            }))
+            .send_and_recv(Message::GetDescriptors(GetDescriptorsRequest { device_id }))
             .await?;
         match response {
             Message::DescriptorData(resp) => Ok(resp.descriptors),
@@ -143,7 +133,8 @@ impl Session {
         match response {
             Message::AttachResult(resp) if resp.success => Ok(resp.session_id.unwrap()),
             Message::AttachResult(resp) => Err(WolfUsbError::ProtocolError(
-                resp.error_message.unwrap_or_else(|| "Attach failed".to_string()),
+                resp.error_message
+                    .unwrap_or_else(|| "Attach failed".to_string()),
             )),
             Message::Error(e) => Err(WolfUsbError::ProtocolError(e.message)),
             other => Err(WolfUsbError::UnexpectedMessage {
@@ -163,7 +154,8 @@ impl Session {
         match response {
             Message::DetachResult(resp) if resp.success => Ok(()),
             Message::DetachResult(resp) => Err(WolfUsbError::ProtocolError(
-                resp.error_message.unwrap_or_else(|| "Detach failed".to_string()),
+                resp.error_message
+                    .unwrap_or_else(|| "Detach failed".to_string()),
             )),
             Message::Error(e) => Err(WolfUsbError::ProtocolError(e.message)),
             other => Err(WolfUsbError::UnexpectedMessage {
@@ -177,9 +169,7 @@ impl Session {
         &mut self,
         req: ControlTransferRequest,
     ) -> Result<TransferResponse> {
-        let response = self
-            .send_and_recv(Message::ControlTransfer(req))
-            .await?;
+        let response = self.send_and_recv(Message::ControlTransfer(req)).await?;
         match response {
             Message::TransferResult(resp) => Ok(resp),
             Message::Error(e) => Err(WolfUsbError::ProtocolError(e.message)),
@@ -190,10 +180,7 @@ impl Session {
         }
     }
 
-    pub async fn bulk_transfer(
-        &mut self,
-        req: BulkTransferRequest,
-    ) -> Result<TransferResponse> {
+    pub async fn bulk_transfer(&mut self, req: BulkTransferRequest) -> Result<TransferResponse> {
         let response = self.send_and_recv(Message::BulkTransfer(req)).await?;
         match response {
             Message::TransferResult(resp) => Ok(resp),
@@ -209,9 +196,7 @@ impl Session {
         &mut self,
         req: InterruptTransferRequest,
     ) -> Result<TransferResponse> {
-        let response = self
-            .send_and_recv(Message::InterruptTransfer(req))
-            .await?;
+        let response = self.send_and_recv(Message::InterruptTransfer(req)).await?;
         match response {
             Message::TransferResult(resp) => Ok(resp),
             Message::Error(e) => Err(WolfUsbError::ProtocolError(e.message)),
