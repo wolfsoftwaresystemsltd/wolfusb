@@ -2,7 +2,10 @@
 
 use futures::{SinkExt, StreamExt};
 use log::debug;
+use rustls::pki_types::ServerName;
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
+use tokio_rustls::TlsConnector;
 use tokio_util::codec::Framed;
 
 use crate::error::{Result, WolfUsbError};
@@ -10,14 +13,40 @@ use crate::protocol::codec::WolfUsbCodec;
 use crate::protocol::messages::*;
 use crate::protocol::types::*;
 
+trait AsyncStream: AsyncRead + AsyncWrite + Unpin + Send + Sync {}
+impl<T: AsyncRead + AsyncWrite + Unpin + Send + Sync> AsyncStream for T {}
+
+type BoxedStream = Box<dyn AsyncStream>;
+
 pub struct Session {
-    framed: Framed<TcpStream, WolfUsbCodec>,
+    framed: Framed<BoxedStream, WolfUsbCodec>,
     pub server_name: String,
 }
 
 impl Session {
-    pub async fn connect(addr: &str, client_name: &str, shared_key: Option<&[u8]>) -> Result<Self> {
-        let stream = TcpStream::connect(addr).await?;
+    pub async fn connect(
+        addr: &str,
+        client_name: &str,
+        shared_key: Option<&[u8]>,
+        tls_connector: Option<TlsConnector>,
+    ) -> Result<Self> {
+        let tcp_stream = TcpStream::connect(addr).await?;
+
+        let stream: BoxedStream = if let Some(connector) = tls_connector {
+            // Extract hostname from addr (host:port)
+            let host = addr.split(':').next().unwrap_or(addr);
+            let server_name = ServerName::try_from(host.to_string()).map_err(|e| {
+                WolfUsbError::ProtocolError(format!("Invalid TLS server name: {e}"))
+            })?;
+            let tls_stream = connector
+                .connect(server_name, tcp_stream)
+                .await
+                .map_err(|e| WolfUsbError::ProtocolError(format!("TLS handshake failed: {e}")))?;
+            Box::new(tls_stream)
+        } else {
+            Box::new(tcp_stream)
+        };
+
         let mut framed = Framed::new(stream, WolfUsbCodec);
 
         // Generate auth nonce
@@ -49,11 +78,10 @@ impl Session {
         framed.send(hello).await?;
 
         // Receive HelloResponse
-        let response = framed
+        let response: Message = framed
             .next()
             .await
-            .ok_or(WolfUsbError::ConnectionClosed)?
-            .map_err(|e| WolfUsbError::ProtocolError(e.to_string()))?;
+            .ok_or(WolfUsbError::ConnectionClosed)??;
 
         let hello_resp = match response {
             Message::HelloResponse(resp) => resp,

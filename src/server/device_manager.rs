@@ -12,6 +12,8 @@ use crate::protocol::types::*;
 
 struct AttachmentInfo {
     handle: Arc<DeviceHandle<Context>>,
+    vendor_id: u16,
+    product_id: u16,
     detached_kernel_drivers: Vec<u8>,
     claimed_interfaces: Vec<u8>,
     client_addr: SocketAddr,
@@ -97,15 +99,18 @@ impl DeviceManager {
         let device = self.find_device(device_id)?;
         let desc = device.device_descriptor()?;
 
-        let (manufacturer, product, serial_number) = match device.open() {
-            Ok(handle) => {
-                let mfr = read_string_desc(&handle, desc.manufacturer_string_index());
-                let prod = read_string_desc(&handle, desc.product_string_index());
-                let serial = read_string_desc(&handle, desc.serial_number_string_index());
-                (mfr, prod, serial)
-            }
-            Err(_) => (None, None, None),
-        };
+        // Open handle once for all string descriptor reads
+        let handle = device.open().ok();
+
+        let manufacturer = handle
+            .as_ref()
+            .and_then(|h| read_string_desc(h, desc.manufacturer_string_index()));
+        let product = handle
+            .as_ref()
+            .and_then(|h| read_string_desc(h, desc.product_string_index()));
+        let serial_number = handle
+            .as_ref()
+            .and_then(|h| read_string_desc(h, desc.serial_number_string_index()));
 
         let version = desc.usb_version();
         let dev_version = desc.device_version();
@@ -142,6 +147,10 @@ impl DeviceManager {
                 }
             };
 
+            let config_description = handle
+                .as_ref()
+                .and_then(|h| read_string_desc(h, config.description_string_index()));
+
             let mut interfaces = Vec::new();
             for iface in config.interfaces() {
                 for setting in iface.descriptors() {
@@ -157,6 +166,10 @@ impl DeviceManager {
                         });
                     }
 
+                    let iface_description = handle
+                        .as_ref()
+                        .and_then(|h| read_string_desc(h, setting.description_string_index()));
+
                     interfaces.push(InterfaceInfo {
                         interface_number: setting.interface_number(),
                         setting_number: setting.setting_number(),
@@ -164,7 +177,7 @@ impl DeviceManager {
                         sub_class_code: setting.sub_class_code(),
                         protocol_code: setting.protocol_code(),
                         num_endpoints: setting.num_endpoints(),
-                        description: None,
+                        description: iface_description,
                         endpoints,
                     });
                 }
@@ -176,7 +189,7 @@ impl DeviceManager {
                 max_power_ma: config.max_power() as u16,
                 self_powered: config.self_powered(),
                 remote_wakeup: config.remote_wakeup(),
-                description: None,
+                description: config_description,
                 interfaces,
             });
         }
@@ -193,6 +206,9 @@ impl DeviceManager {
         }
 
         let device = self.find_device(device_id)?;
+        let desc = device.device_descriptor()?;
+        let vid = desc.vendor_id();
+        let pid = desc.product_id();
         let handle = device.open()?;
 
         // Try to detach kernel drivers on all interfaces
@@ -225,6 +241,8 @@ impl DeviceManager {
             device_id,
             AttachmentInfo {
                 handle: Arc::new(handle),
+                vendor_id: vid,
+                product_id: pid,
                 detached_kernel_drivers: detached_drivers,
                 claimed_interfaces: Vec::new(),
                 client_addr,
@@ -311,11 +329,34 @@ impl DeviceManager {
     }
 
     /// Get a cloneable Arc handle for use in spawn_blocking.
+    /// Verifies the device at this bus:addr still has the same VID:PID
+    /// to detect replug events.
     pub fn get_handle(&self, device_id: DeviceId) -> Result<Arc<DeviceHandle<Context>>> {
-        self.attachments
+        let attachment = self
+            .attachments
             .get(&device_id)
-            .map(|a| Arc::clone(&a.handle))
-            .ok_or(WolfUsbError::DeviceNotAttached)
+            .ok_or(WolfUsbError::DeviceNotAttached)?;
+
+        // Verify the physical device hasn't been swapped (replug detection)
+        if let Ok(device) = self.find_device(device_id)
+            && let Ok(desc) = device.device_descriptor()
+            && (desc.vendor_id() != attachment.vendor_id
+                || desc.product_id() != attachment.product_id)
+        {
+            warn!(
+                "Device {device_id} identity changed: was {:04x}:{:04x}, now {:04x}:{:04x} (replug detected)",
+                attachment.vendor_id,
+                attachment.product_id,
+                desc.vendor_id(),
+                desc.product_id()
+            );
+            return Err(WolfUsbError::DeviceNotFound {
+                bus: device_id.bus_number,
+                addr: device_id.address,
+            });
+        }
+
+        Ok(Arc::clone(&attachment.handle))
     }
 
     pub fn validate_session(&self, session_id: u64, device_id: DeviceId) -> Result<()> {

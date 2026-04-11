@@ -6,18 +6,18 @@ use std::sync::Arc;
 
 use futures::{SinkExt, StreamExt};
 use log::{error, info, warn};
-use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use tokio_util::codec::Framed;
 
 use super::device_manager::DeviceManager;
+use super::listener::BoxedStream;
 use super::transfer;
 use crate::protocol::codec::WolfUsbCodec;
 use crate::protocol::messages::*;
 use crate::protocol::types::DeviceId;
 
 pub struct Connection {
-    framed: Framed<TcpStream, WolfUsbCodec>,
+    framed: Framed<BoxedStream, WolfUsbCodec>,
     device_manager: Arc<Mutex<DeviceManager>>,
     peer_addr: SocketAddr,
     authenticated: bool,
@@ -27,7 +27,7 @@ pub struct Connection {
 
 impl Connection {
     pub fn new(
-        stream: TcpStream,
+        stream: BoxedStream,
         device_manager: Arc<Mutex<DeviceManager>>,
         peer_addr: SocketAddr,
         shared_key: Option<Vec<u8>>,

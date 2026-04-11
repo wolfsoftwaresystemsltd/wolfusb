@@ -2,29 +2,61 @@
 
 use std::sync::Arc;
 
-use log::info;
+use log::{info, warn};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
+use tokio_rustls::TlsAcceptor;
 
 use super::connection::Connection;
 use super::device_manager::DeviceManager;
 use crate::error::Result;
 
-pub async fn run_server(bind_addr: &str, port: u16, shared_key: Option<Vec<u8>>) -> Result<()> {
+pub async fn run_server(
+    bind_addr: &str,
+    port: u16,
+    shared_key: Option<Vec<u8>>,
+    tls_acceptor: Option<TlsAcceptor>,
+) -> Result<()> {
     let device_manager = Arc::new(Mutex::new(DeviceManager::new()?));
     let addr = format!("{bind_addr}:{port}");
     let listener = TcpListener::bind(&addr).await?;
 
-    info!("wolfusb server listening on {addr}");
+    let tls_mode = if tls_acceptor.is_some() {
+        "TLS"
+    } else {
+        "plain"
+    };
+    info!("wolfusb server listening on {addr} ({tls_mode})");
 
     loop {
         let (stream, peer_addr) = listener.accept().await?;
         let dm = device_manager.clone();
         let key = shared_key.clone();
+        let acceptor = tls_acceptor.clone();
 
         tokio::spawn(async move {
-            let mut conn = Connection::new(stream, dm, peer_addr, key);
-            conn.run().await;
+            if let Some(acceptor) = acceptor {
+                match acceptor.accept(stream).await {
+                    Ok(tls_stream) => {
+                        let mut conn = Connection::new(Box::new(tls_stream), dm, peer_addr, key);
+                        conn.run().await;
+                    }
+                    Err(e) => {
+                        warn!("TLS handshake failed for {peer_addr}: {e}");
+                    }
+                }
+            } else {
+                let mut conn = Connection::new(Box::new(stream), dm, peer_addr, key);
+                conn.run().await;
+            }
         });
     }
 }
+
+/// Combined trait for async read+write streams.
+pub trait AsyncStream: AsyncRead + AsyncWrite + Unpin + Send + Sync {}
+impl<T: AsyncRead + AsyncWrite + Unpin + Send + Sync> AsyncStream for T {}
+
+/// Type-erased async stream for use in Connection.
+pub type BoxedStream = Box<dyn AsyncStream>;

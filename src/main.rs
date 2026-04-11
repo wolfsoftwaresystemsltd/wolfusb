@@ -1,5 +1,7 @@
 // (C) Copyright Wolf Software Systems Ltd - https://wolf.uk.com
 
+use std::path::PathBuf;
+
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -7,6 +9,20 @@ use clap::{Parser, Subcommand};
 struct Cli {
     #[command(subcommand)]
     command: Commands,
+}
+
+/// Common TLS options for client commands.
+#[derive(clap::Args, Clone)]
+struct ClientTlsArgs {
+    /// Enable TLS encryption
+    #[arg(long)]
+    tls: bool,
+    /// Path to CA certificate PEM file for TLS verification
+    #[arg(long)]
+    tls_ca: Option<PathBuf>,
+    /// Skip TLS certificate verification (insecure)
+    #[arg(long)]
+    tls_insecure: bool,
 }
 
 #[derive(Subcommand)]
@@ -22,6 +38,12 @@ enum Commands {
         /// Pre-shared authentication key
         #[arg(long, env = "WOLFUSB_KEY")]
         key: Option<String>,
+        /// Path to TLS certificate PEM file
+        #[arg(long)]
+        tls_cert: Option<PathBuf>,
+        /// Path to TLS private key PEM file
+        #[arg(long)]
+        tls_key: Option<PathBuf>,
     },
 
     /// List remote USB devices
@@ -32,6 +54,8 @@ enum Commands {
         /// Pre-shared authentication key
         #[arg(long, env = "WOLFUSB_KEY")]
         key: Option<String>,
+        #[command(flatten)]
+        tls_args: ClientTlsArgs,
     },
 
     /// Show detailed device descriptors
@@ -48,6 +72,8 @@ enum Commands {
         /// Pre-shared authentication key
         #[arg(long, env = "WOLFUSB_KEY")]
         key: Option<String>,
+        #[command(flatten)]
+        tls_args: ClientTlsArgs,
     },
 
     /// Attach to a remote USB device
@@ -64,6 +90,8 @@ enum Commands {
         /// Pre-shared authentication key
         #[arg(long, env = "WOLFUSB_KEY")]
         key: Option<String>,
+        #[command(flatten)]
+        tls_args: ClientTlsArgs,
     },
 
     /// Detach from a remote USB device
@@ -83,6 +111,8 @@ enum Commands {
         /// Pre-shared authentication key
         #[arg(long, env = "WOLFUSB_KEY")]
         key: Option<String>,
+        #[command(flatten)]
+        tls_args: ClientTlsArgs,
     },
 
     /// Perform a USB control transfer
@@ -123,6 +153,8 @@ enum Commands {
         /// Pre-shared authentication key
         #[arg(long, env = "WOLFUSB_KEY")]
         key: Option<String>,
+        #[command(flatten)]
+        tls_args: ClientTlsArgs,
     },
 
     /// Perform a USB bulk transfer
@@ -154,6 +186,8 @@ enum Commands {
         /// Pre-shared authentication key
         #[arg(long, env = "WOLFUSB_KEY")]
         key: Option<String>,
+        #[command(flatten)]
+        tls_args: ClientTlsArgs,
     },
 
     /// Perform a USB interrupt transfer
@@ -185,6 +219,8 @@ enum Commands {
         /// Pre-shared authentication key
         #[arg(long, env = "WOLFUSB_KEY")]
         key: Option<String>,
+        #[command(flatten)]
+        tls_args: ClientTlsArgs,
     },
 }
 
@@ -205,6 +241,28 @@ fn parse_u16_hex(s: &str) -> anyhow::Result<u16> {
     }
 }
 
+fn build_tls_connector(
+    tls_args: &ClientTlsArgs,
+) -> anyhow::Result<Option<tokio_rustls::TlsConnector>> {
+    if !tls_args.tls && tls_args.tls_ca.is_none() && !tls_args.tls_insecure {
+        return Ok(None);
+    }
+    Ok(Some(wolfusb::tls::client_connector(
+        tls_args.tls_ca.as_deref(),
+        tls_args.tls_insecure,
+    )?))
+}
+
+async fn client_session(
+    server: &str,
+    key: Option<&String>,
+    tls_args: &ClientTlsArgs,
+) -> anyhow::Result<wolfusb::client::session::Session> {
+    let key_bytes = key.map(|k| k.as_bytes());
+    let tls = build_tls_connector(tls_args)?;
+    Ok(wolfusb::client::session::Session::connect(server, "wolfusb-cli", key_bytes, tls).await?)
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
@@ -212,16 +270,28 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Server { bind, port, key } => {
+        Commands::Server {
+            bind,
+            port,
+            key,
+            tls_cert,
+            tls_key,
+        } => {
             let shared_key = key.map(|k| k.into_bytes());
-            wolfusb::server::listener::run_server(&bind, port, shared_key).await?;
+            let tls_acceptor = match (tls_cert, tls_key) {
+                (Some(cert), Some(key)) => Some(wolfusb::tls::server_acceptor(&cert, &key)?),
+                (None, None) => None,
+                _ => anyhow::bail!("Both --tls-cert and --tls-key must be provided together"),
+            };
+            wolfusb::server::listener::run_server(&bind, port, shared_key, tls_acceptor).await?;
         }
 
-        Commands::List { server, key } => {
-            let key_bytes = key.as_deref().map(|k| k.as_bytes());
-            let mut session =
-                wolfusb::client::session::Session::connect(&server, "wolfusb-cli", key_bytes)
-                    .await?;
+        Commands::List {
+            server,
+            key,
+            tls_args,
+        } => {
+            let mut session = client_session(&server, key.as_ref(), &tls_args).await?;
             wolfusb::client::commands::cmd_list(&mut session).await?;
         }
 
@@ -230,11 +300,9 @@ async fn main() -> anyhow::Result<()> {
             bus,
             addr,
             key,
+            tls_args,
         } => {
-            let key_bytes = key.as_deref().map(|k| k.as_bytes());
-            let mut session =
-                wolfusb::client::session::Session::connect(&server, "wolfusb-cli", key_bytes)
-                    .await?;
+            let mut session = client_session(&server, key.as_ref(), &tls_args).await?;
             wolfusb::client::commands::cmd_info(&mut session, bus, addr).await?;
         }
 
@@ -243,11 +311,9 @@ async fn main() -> anyhow::Result<()> {
             bus,
             addr,
             key,
+            tls_args,
         } => {
-            let key_bytes = key.as_deref().map(|k| k.as_bytes());
-            let mut session =
-                wolfusb::client::session::Session::connect(&server, "wolfusb-cli", key_bytes)
-                    .await?;
+            let mut session = client_session(&server, key.as_ref(), &tls_args).await?;
             wolfusb::client::commands::cmd_attach(&mut session, bus, addr).await?;
         }
 
@@ -257,11 +323,9 @@ async fn main() -> anyhow::Result<()> {
             addr,
             session_id,
             key,
+            tls_args,
         } => {
-            let key_bytes = key.as_deref().map(|k| k.as_bytes());
-            let mut session =
-                wolfusb::client::session::Session::connect(&server, "wolfusb-cli", key_bytes)
-                    .await?;
+            let mut session = client_session(&server, key.as_ref(), &tls_args).await?;
             wolfusb::client::commands::cmd_detach(&mut session, bus, addr, session_id).await?;
         }
 
@@ -278,11 +342,9 @@ async fn main() -> anyhow::Result<()> {
             data,
             timeout,
             key,
+            tls_args,
         } => {
-            let key_bytes = key.as_deref().map(|k| k.as_bytes());
-            let mut session =
-                wolfusb::client::session::Session::connect(&server, "wolfusb-cli", key_bytes)
-                    .await?;
+            let mut session = client_session(&server, key.as_ref(), &tls_args).await?;
             wolfusb::client::commands::cmd_control(
                 &mut session,
                 session_id,
@@ -309,11 +371,9 @@ async fn main() -> anyhow::Result<()> {
             data,
             timeout,
             key,
+            tls_args,
         } => {
-            let key_bytes = key.as_deref().map(|k| k.as_bytes());
-            let mut session =
-                wolfusb::client::session::Session::connect(&server, "wolfusb-cli", key_bytes)
-                    .await?;
+            let mut session = client_session(&server, key.as_ref(), &tls_args).await?;
             wolfusb::client::commands::cmd_bulk(
                 &mut session,
                 session_id,
@@ -337,11 +397,9 @@ async fn main() -> anyhow::Result<()> {
             data,
             timeout,
             key,
+            tls_args,
         } => {
-            let key_bytes = key.as_deref().map(|k| k.as_bytes());
-            let mut session =
-                wolfusb::client::session::Session::connect(&server, "wolfusb-cli", key_bytes)
-                    .await?;
+            let mut session = client_session(&server, key.as_ref(), &tls_args).await?;
             wolfusb::client::commands::cmd_interrupt(
                 &mut session,
                 session_id,

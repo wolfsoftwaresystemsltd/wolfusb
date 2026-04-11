@@ -315,6 +315,46 @@ wolfusb list --server host:3240 --key "my-secret-key"
 
 Without a key, the server accepts all connections (suitable for trusted networks only).
 
+## TLS Encryption
+
+wolfusb supports TLS to encrypt all traffic between client and server.
+
+### Generate a self-signed certificate (for testing)
+
+```bash
+openssl req -x509 -newkey rsa:4096 -keyout server.key -out server.crt \
+    -days 365 -nodes -subj "/CN=wolfusb"
+```
+
+### Server with TLS
+
+```bash
+wolfusb server --tls-cert server.crt --tls-key server.key
+```
+
+### Client with TLS
+
+```bash
+# Trust a specific CA/self-signed cert
+wolfusb list --server host:3240 --tls --tls-ca server.crt
+
+# Skip verification (testing only)
+wolfusb list --server host:3240 --tls --tls-insecure
+
+# Use system CA roots (for proper certificates)
+wolfusb list --server host:3240 --tls
+```
+
+### Combined with authentication
+
+```bash
+# Server: TLS + auth key
+wolfusb server --tls-cert server.crt --tls-key server.key --key "secret"
+
+# Client: TLS + auth key
+wolfusb list --server host:3240 --tls --tls-ca server.crt --key "secret"
+```
+
 ## Logging
 
 wolfusb uses `env_logger`. Control verbosity with the `RUST_LOG` environment variable:
