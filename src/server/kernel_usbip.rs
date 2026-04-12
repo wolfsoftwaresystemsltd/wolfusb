@@ -153,22 +153,21 @@ pub fn bind(busid: &str) -> Result<()> {
     // from it. We don't hard-code "usb" because some devices may be bound
     // to a vendor-specific device driver.
     let cur_drv_link = format!("/sys/bus/usb/devices/{}/driver", busid);
-    if let Ok(target) = fs::read_link(&cur_drv_link) {
-        if let Some(drv_name) = target.file_name().and_then(|n| n.to_str()) {
-            if drv_name != "usbip-host" {
-                let unbind = format!("/sys/bus/usb/drivers/{}/unbind", drv_name);
-                fs::OpenOptions::new()
-                    .write(true)
-                    .open(&unbind)
-                    .and_then(|mut f| f.write_all(busid.as_bytes()))
-                    .with_context(|| {
-                        format!(
-                            "unbinding {} from {} (needed before usbip-host can claim it)",
-                            busid, drv_name
-                        )
-                    })?;
-            }
-        }
+    if let Ok(target) = fs::read_link(&cur_drv_link)
+        && let Some(drv_name) = target.file_name().and_then(|n| n.to_str())
+        && drv_name != "usbip-host"
+    {
+        let unbind = format!("/sys/bus/usb/drivers/{}/unbind", drv_name);
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&unbind)
+            .and_then(|mut f| f.write_all(busid.as_bytes()))
+            .with_context(|| {
+                format!(
+                    "unbinding {} from {} (needed before usbip-host can claim it)",
+                    busid, drv_name
+                )
+            })?;
     }
 
     // Step 3: bind directly to usbip-host.
