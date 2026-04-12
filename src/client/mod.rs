@@ -2,4 +2,5 @@
 
 pub mod commands;
 pub mod display;
+pub mod mount;
 pub mod session;

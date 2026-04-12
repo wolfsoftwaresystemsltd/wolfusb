@@ -61,6 +61,25 @@ enum Commands {
         tls_args: ClientTlsArgs,
     },
 
+    /// Mount a remote USB device as a virtual local USB device via vhci_hcd.
+    /// The device appears in lsusb and can be used by containers/VMs.
+    /// Requires root (CAP_SYS_ADMIN) and vhci-hcd kernel module.
+    Mount {
+        /// Server address (host:port) — TLS is not supported in mount mode
+        /// because vhci_hcd requires a plain TCP socket
+        #[arg(short, long)]
+        server: String,
+        /// USB bus number (on the remote server)
+        #[arg(long)]
+        bus: u8,
+        /// USB device address (on the remote server)
+        #[arg(long)]
+        addr: u8,
+        /// Pre-shared authentication key
+        #[arg(long, env = "WOLFUSB_KEY")]
+        key: Option<String>,
+    },
+
     /// Show detailed device descriptors
     Info {
         /// Server address (host:port)
@@ -297,6 +316,10 @@ async fn main() -> anyhow::Result<()> {
         } => {
             let mut session = client_session(&server, key.as_ref(), &tls_args).await?;
             wolfusb::client::commands::cmd_list(&mut session, json).await?;
+        }
+
+        Commands::Mount { server, bus, addr, key } => {
+            wolfusb::client::mount::cmd_mount(&server, bus, addr, key.as_ref()).await?;
         }
 
         Commands::Info {
