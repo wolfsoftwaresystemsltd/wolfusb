@@ -40,6 +40,13 @@ pub enum Message {
     SetConfiguration(SetConfigurationRequest),
     SetConfigurationResult(SetConfigurationResponse),
 
+    // Virtual USB bridge (vhci_hcd mode) — after auth, client requests bridge mode;
+    // once server sends BridgeAccepted, the wire protocol switches to raw USB/IP
+    // kernel protocol bytes (no more bincode framing).
+    Bridge(BridgeRequest),
+    BridgeAccepted(BridgeAcceptedResponse),
+    BridgeRejected(BridgeRejectedResponse),
+
     // Error
     Error(ErrorResponse),
 
@@ -198,6 +205,47 @@ pub struct SetConfigurationRequest {
 pub struct SetConfigurationResponse {
     pub success: bool,
     pub error_message: Option<String>,
+}
+
+// --- Virtual USB Bridge ---
+// After the client sends Bridge and receives BridgeAccepted, the connection
+// switches mode: all further bytes on the wire are raw USB/IP kernel protocol.
+// The client hands the underlying socket FD to /sys/.../vhci_hcd.0/attach
+// which lets the Linux kernel treat the remote device as a local USB device.
+
+#[derive(Debug, Clone, Encode, Decode)]
+pub struct BridgeRequest {
+    pub device_id: DeviceId,
+}
+
+#[derive(Debug, Clone, Encode, Decode)]
+pub struct BridgeAcceptedResponse {
+    pub device_id: DeviceId,
+    /// USB/IP "devid" — encoded bus/device numbers used by the kernel
+    pub devid: u32,
+    /// Device speed (matches rusb::Speed ordinal)
+    pub speed: u8,
+    /// Vendor ID
+    pub vendor_id: u16,
+    /// Product ID
+    pub product_id: u16,
+    /// Device bcdDevice
+    pub bcd_device: u16,
+    /// Device class codes
+    pub device_class: u8,
+    pub device_subclass: u8,
+    pub device_protocol: u8,
+    /// Number of configurations
+    pub num_configurations: u8,
+    /// Number of interfaces in active config
+    pub num_interfaces: u8,
+    /// Active configuration value (bConfigurationValue)
+    pub config_value: u8,
+}
+
+#[derive(Debug, Clone, Encode, Decode)]
+pub struct BridgeRejectedResponse {
+    pub error_message: String,
 }
 
 // --- Error ---

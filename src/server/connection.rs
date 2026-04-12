@@ -25,6 +25,16 @@ pub struct Connection {
     sessions: HashMap<u64, DeviceId>,
 }
 
+/// Action returned by handle_message — either send a reply, or switch to bridge mode
+enum Action {
+    Reply(Message),
+    Bridge {
+        reply: Message,
+        handle: Arc<rusb::DeviceHandle<rusb::Context>>,
+        devid: u32,
+    },
+}
+
 impl Connection {
     pub fn new(
         stream: BoxedStream,
@@ -42,61 +52,160 @@ impl Connection {
         }
     }
 
-    pub async fn run(&mut self) {
+    pub async fn run(mut self) {
         info!("Client connected: {}", self.peer_addr);
 
-        loop {
+        let bridge_handoff = loop {
             let msg = match self.framed.next().await {
                 Some(Ok(msg)) => msg,
                 Some(Err(e)) => {
                     error!("Protocol error from {}: {e}", self.peer_addr);
-                    break;
+                    break None;
                 }
                 None => {
                     info!("Client disconnected: {}", self.peer_addr);
-                    break;
+                    break None;
                 }
             };
 
-            let response = self.handle_message(msg).await;
-
-            if let Some(resp) = response
-                && let Err(e) = self.framed.send(resp).await
-            {
-                error!("Failed to send response to {}: {e}", self.peer_addr);
-                break;
+            match self.handle_message(msg).await {
+                Action::Reply(resp) => {
+                    if let Err(e) = self.framed.send(resp).await {
+                        error!("Failed to send response to {}: {e}", self.peer_addr);
+                        break None;
+                    }
+                }
+                Action::Bridge { reply, handle, devid } => {
+                    if let Err(e) = self.framed.send(reply).await {
+                        error!("Failed to send BridgeAccepted to {}: {e}", self.peer_addr);
+                        break None;
+                    }
+                    if let Err(e) = self.framed.flush().await {
+                        error!("Failed to flush before bridge mode: {e}");
+                        break None;
+                    }
+                    break Some((handle, devid));
+                }
             }
+        };
+
+        if let Some((handle, devid)) = bridge_handoff {
+            // Hand over raw stream to bridge loop
+            let stream = self.framed.into_inner();
+            super::bridge::run_bridge(stream, handle, devid).await;
+            info!("Bridge closed: {}", self.peer_addr);
+            return;
         }
 
         self.cleanup().await;
     }
 
-    async fn handle_message(&mut self, msg: Message) -> Option<Message> {
+    async fn handle_message(&mut self, msg: Message) -> Action {
         match msg {
-            Message::Hello(req) => Some(self.handle_hello(req)),
-            Message::Ping => Some(Message::Pong),
+            Message::Hello(req) => Action::Reply(self.handle_hello(req)),
+            Message::Ping => Action::Reply(Message::Pong),
 
             _ if self.shared_key.is_some() && !self.authenticated => {
-                Some(Message::Error(ErrorResponse {
+                Action::Reply(Message::Error(ErrorResponse {
                     code: ErrorCode::AuthenticationFailed,
                     message: "Not authenticated. Send Hello first.".to_string(),
                 }))
             }
 
-            Message::ListDevices => Some(self.handle_list_devices().await),
-            Message::GetDescriptors(req) => Some(self.handle_get_descriptors(req).await),
-            Message::Attach(req) => Some(self.handle_attach(req).await),
-            Message::Detach(req) => Some(self.handle_detach(req).await),
-            Message::ControlTransfer(req) => Some(self.handle_control_transfer(req).await),
-            Message::BulkTransfer(req) => Some(self.handle_bulk_transfer(req).await),
-            Message::InterruptTransfer(req) => Some(self.handle_interrupt_transfer(req).await),
-            Message::ClaimInterface(req) => Some(self.handle_claim_interface(req).await),
-            Message::ReleaseInterface(req) => Some(self.handle_release_interface(req).await),
-            Message::SetConfiguration(req) => Some(self.handle_set_configuration(req).await),
+            Message::ListDevices => Action::Reply(self.handle_list_devices().await),
+            Message::GetDescriptors(req) => Action::Reply(self.handle_get_descriptors(req).await),
+            Message::Attach(req) => Action::Reply(self.handle_attach(req).await),
+            Message::Detach(req) => Action::Reply(self.handle_detach(req).await),
+            Message::ControlTransfer(req) => Action::Reply(self.handle_control_transfer(req).await),
+            Message::BulkTransfer(req) => Action::Reply(self.handle_bulk_transfer(req).await),
+            Message::InterruptTransfer(req) => Action::Reply(self.handle_interrupt_transfer(req).await),
+            Message::ClaimInterface(req) => Action::Reply(self.handle_claim_interface(req).await),
+            Message::ReleaseInterface(req) => Action::Reply(self.handle_release_interface(req).await),
+            Message::SetConfiguration(req) => Action::Reply(self.handle_set_configuration(req).await),
+            Message::Bridge(req) => self.handle_bridge(req).await,
 
-            _ => Some(Message::Error(ErrorResponse {
+            _ => Action::Reply(Message::Error(ErrorResponse {
                 code: ErrorCode::InternalError,
                 message: "Unexpected message type".to_string(),
+            })),
+        }
+    }
+
+    async fn handle_bridge(&mut self, req: BridgeRequest) -> Action {
+        use crate::bridge::usbip::make_devid;
+        let dm = self.device_manager.clone();
+        let did = req.device_id;
+        // Attach (claim) and get a handle
+        let attach_res = tokio::task::spawn_blocking(move || {
+            let mut mgr = dm.blocking_lock();
+            let _ = mgr.attach(did, "0.0.0.0:0".parse().unwrap());
+            mgr.get_handle(did)
+        }).await;
+
+        let handle = match attach_res {
+            Ok(Ok(h)) => h,
+            Ok(Err(e)) => {
+                return Action::Reply(Message::BridgeRejected(BridgeRejectedResponse {
+                    error_message: format!("Failed to attach device: {}", e),
+                }));
+            }
+            Err(e) => {
+                return Action::Reply(Message::BridgeRejected(BridgeRejectedResponse {
+                    error_message: format!("Internal error: {}", e),
+                }));
+            }
+        };
+
+        // Read descriptors for BridgeAccepted
+        let handle_c = handle.clone();
+        let desc_res = tokio::task::spawn_blocking(move || -> Result<BridgeAcceptedResponse, String> {
+            let device = handle_c.device();
+            let desc = device.device_descriptor().map_err(|e| e.to_string())?;
+            let config_value = device.active_config_descriptor()
+                .map(|c| c.number()).unwrap_or(0);
+            let num_interfaces = device.active_config_descriptor()
+                .map(|c| c.num_interfaces()).unwrap_or(0);
+            let speed_u8 = match device.speed() {
+                rusb::Speed::Low => 1,
+                rusb::Speed::Full => 2,
+                rusb::Speed::High => 3,
+                rusb::Speed::Super => 5,
+                rusb::Speed::SuperPlus => 6,
+                _ => 3,
+            };
+            Ok(BridgeAcceptedResponse {
+                device_id: did,
+                devid: make_devid(did.bus_number, did.address),
+                speed: speed_u8,
+                vendor_id: desc.vendor_id(),
+                product_id: desc.product_id(),
+                bcd_device: {
+                    let v = desc.device_version();
+                    ((v.major() as u16) << 8) | ((v.minor() as u16) << 4) | (v.sub_minor() as u16)
+                },
+                device_class: desc.class_code(),
+                device_subclass: desc.sub_class_code(),
+                device_protocol: desc.protocol_code(),
+                num_configurations: desc.num_configurations(),
+                num_interfaces,
+                config_value,
+            })
+        }).await;
+
+        match desc_res {
+            Ok(Ok(reply)) => {
+                let devid = reply.devid;
+                Action::Bridge {
+                    reply: Message::BridgeAccepted(reply),
+                    handle,
+                    devid,
+                }
+            }
+            Ok(Err(e)) => Action::Reply(Message::BridgeRejected(BridgeRejectedResponse {
+                error_message: e,
+            })),
+            Err(e) => Action::Reply(Message::BridgeRejected(BridgeRejectedResponse {
+                error_message: format!("Internal error: {}", e),
             })),
         }
     }

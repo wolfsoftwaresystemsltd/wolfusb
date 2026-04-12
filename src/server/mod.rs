@@ -1,5 +1,6 @@
 // (C) Copyright Wolf Software Systems Ltd - https://wolf.uk.com
 
+pub mod bridge;
 pub mod connection;
 pub mod device_manager;
 pub mod listener;

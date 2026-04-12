@@ -39,7 +39,7 @@ pub async fn run_server(
             if let Some(acceptor) = acceptor {
                 match acceptor.accept(stream).await {
                     Ok(tls_stream) => {
-                        let mut conn = Connection::new(Box::new(tls_stream), dm, peer_addr, key);
+                        let conn = Connection::new(Box::new(tls_stream), dm, peer_addr, key);
                         conn.run().await;
                     }
                     Err(e) => {
@@ -47,7 +47,7 @@ pub async fn run_server(
                     }
                 }
             } else {
-                let mut conn = Connection::new(Box::new(stream), dm, peer_addr, key);
+                let conn = Connection::new(Box::new(stream), dm, peer_addr, key);
                 conn.run().await;
             }
         });

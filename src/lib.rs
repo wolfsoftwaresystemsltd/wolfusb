@@ -1,5 +1,6 @@
 // (C) Copyright Wolf Software Systems Ltd - https://wolf.uk.com
 
+pub mod bridge;
 pub mod client;
 pub mod error;
 pub mod protocol;
