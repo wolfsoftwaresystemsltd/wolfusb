@@ -14,41 +14,16 @@ env:
 jobs:
   build:
     name: Build ${{ matrix.target }}
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
       matrix:
         include:
-          # Linux x86_64
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
-            archive: tar.gz
-            cross: false
-          # Linux aarch64
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
-            archive: tar.gz
-            cross: true
-          # macOS x86_64 (Intel)
-          - target: x86_64-apple-darwin
-            os: macos-latest
-            archive: tar.gz
-            cross: false
-          # macOS aarch64 (Apple Silicon)
-          - target: aarch64-apple-darwin
-            os: macos-latest
-            archive: tar.gz
-            cross: false
-          # Windows x86_64
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
-            archive: zip
-            cross: false
-          # Linux ARMv7 (Raspberry Pi etc.)
-          - target: armv7-unknown-linux-gnueabihf
-            os: ubuntu-latest
-            archive: tar.gz
-            cross: true
+          # Static musl builds — work on any Linux distro regardless of glibc version.
+          # libusb is linked statically via rusb's vendored feature.
+          - target: x86_64-unknown-linux-musl
+          - target: aarch64-unknown-linux-musl
+          - target: armv7-unknown-linux-musleabihf
 
     steps:
       - uses: actions/checkout@v4
@@ -57,71 +32,28 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      # Install cross for Linux ARM targets
       - name: Install cross
-        if: matrix.cross
         run: cargo install cross --git https://github.com/cross-rs/cross
 
-      # Linux native dependencies
-      - name: Install Linux dependencies
-        if: matrix.os == 'ubuntu-latest' && !matrix.cross
-        run: sudo apt-get update && sudo apt-get install -y libusb-1.0-0-dev pkg-config
-
-      # macOS dependencies
-      - name: Install macOS dependencies
-        if: matrix.os == 'macos-latest'
-        run: brew install libusb
-
-      # Windows dependencies
-      - name: Install Windows dependencies
-        if: matrix.os == 'windows-latest'
-        run: vcpkg install libusb:x64-windows-static-md
-        shell: bash
-
-      - name: Set vcpkg env (Windows)
-        if: matrix.os == 'windows-latest'
-        run: |
-          echo "VCPKG_ROOT=$VCPKG_INSTALLATION_ROOT" >> $GITHUB_ENV
-          echo "LIBUSB_DIR=$VCPKG_INSTALLATION_ROOT/installed/x64-windows-static-md" >> $GITHUB_ENV
-        shell: bash
-
-      # Build with cross (ARM targets) or cargo (everything else)
-      - name: Build (cross)
-        if: matrix.cross
+      - name: Build (static musl)
         run: cross build --release --target ${{ matrix.target }}
-        env:
-          PKG_CONFIG_ALLOW_CROSS: "1"
 
-      - name: Build (cargo)
-        if: ${{ !matrix.cross }}
-        run: cargo build --release --target ${{ matrix.target }}
-
-      # Package
-      - name: Package (Unix)
-        if: matrix.archive == 'tar.gz'
+      - name: Package
         run: |
           cd target/${{ matrix.target }}/release
           tar czf ../../../wolfusb-${{ github.ref_name }}-${{ matrix.target }}.tar.gz wolfusb
           cd ../../..
 
-      - name: Package (Windows)
-        if: matrix.archive == 'zip'
-        run: |
-          cd target/${{ matrix.target }}/release
-          7z a ../../../wolfusb-${{ github.ref_name }}-${{ matrix.target }}.zip wolfusb.exe
-          cd ../../..
-        shell: bash
-
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: wolfusb-${{ matrix.target }}
-          path: wolfusb-${{ github.ref_name }}-${{ matrix.target }}.*
+          path: wolfusb-${{ github.ref_name }}-${{ matrix.target }}.tar.gz
 
   release:
     name: Create Release
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 

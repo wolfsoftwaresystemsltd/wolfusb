@@ -68,31 +68,19 @@ detect_platform() {
 
     case "$os" in
         Linux)
+            # Static musl builds — work on any Linux distro regardless of glibc version
             case "$arch" in
-                x86_64|amd64)    target="x86_64-unknown-linux-gnu" ;;
-                aarch64|arm64)   target="aarch64-unknown-linux-gnu" ;;
-                armv7l|armhf)    target="armv7-unknown-linux-gnueabihf" ;;
+                x86_64|amd64)    target="x86_64-unknown-linux-musl" ;;
+                aarch64|arm64)   target="aarch64-unknown-linux-musl" ;;
+                armv7l|armhf)    target="armv7-unknown-linux-musleabihf" ;;
                 *)
                     error "Unsupported Linux architecture: $arch"
                     exit 1
                     ;;
             esac
             ;;
-        Darwin)
-            case "$arch" in
-                x86_64|amd64)    target="x86_64-apple-darwin" ;;
-                aarch64|arm64)   target="aarch64-apple-darwin" ;;
-                *)
-                    error "Unsupported macOS architecture: $arch"
-                    exit 1
-                    ;;
-            esac
-            ;;
-        MINGW*|MSYS*|CYGWIN*|Windows_NT)
-            target="x86_64-pc-windows-msvc"
-            ;;
         *)
-            error "Unsupported operating system: $os"
+            error "Unsupported operating system: $os (wolfusb supports Linux only)"
             exit 1
             ;;
     esac
@@ -102,10 +90,7 @@ detect_platform() {
 
 # --- Detect archive extension ---
 archive_ext() {
-    case "$1" in
-        *windows*) echo "zip" ;;
-        *)         echo "tar.gz" ;;
-    esac
+    echo "tar.gz"
 }
 
 # --- Choose install directory ---
@@ -241,9 +226,6 @@ main() {
 
     # Install
     local binary_name="wolfusb"
-    if [[ "$target" == *windows* ]]; then
-        binary_name="wolfusb.exe"
-    fi
 
     if [[ ! -f "${tmpdir}/${binary_name}" ]]; then
         error "Binary not found in archive."
