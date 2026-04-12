@@ -1,75 +1,90 @@
-name: Release
+name: Build Release Binaries
 
 on:
   push:
     tags:
       - 'v*'
-
-permissions:
-  contents: write
-
-env:
-  CARGO_TERM_COLOR: always
+    branches: [main]
+    paths:
+      - 'Cargo.toml'
+      - 'src/**'
+      - '.github/workflows/release.yml'
+  workflow_dispatch:
 
 jobs:
   build:
-    name: Build ${{ matrix.target }}
-    runs-on: ubuntu-22.04
     strategy:
-      fail-fast: false
       matrix:
         include:
-          # Static musl builds — work on any Linux distro regardless of glibc version.
-          # libusb is linked statically via rusb's vendored feature.
           - target: x86_64-unknown-linux-musl
+            arch: x86_64
+            runner: ubuntu-latest
           - target: aarch64-unknown-linux-musl
-          - target: armv7-unknown-linux-musleabihf
+            arch: aarch64
+            runner: ubuntu-latest
 
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
 
       - name: Install cross
         run: cargo install cross --git https://github.com/cross-rs/cross
 
-      - name: Build (static musl)
+      - name: Build static binary
         run: cross build --release --target ${{ matrix.target }}
 
-      - name: Package
+      - name: Get version
+        id: version
+        run: echo "version=$(grep '^version' Cargo.toml | head -1 | sed 's/.*\"\(.*\)\".*/\1/')" >> "$GITHUB_OUTPUT"
+
+      - name: Package binary
         run: |
-          cd target/${{ matrix.target }}/release
-          tar czf ../../../wolfusb-${{ github.ref_name }}-${{ matrix.target }}.tar.gz wolfusb
-          cd ../../..
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/wolfusb dist/wolfusb-${{ matrix.arch }}
+          chmod +x dist/wolfusb-${{ matrix.arch }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: wolfusb-${{ matrix.target }}
-          path: wolfusb-${{ github.ref_name }}-${{ matrix.target }}.tar.gz
+          name: wolfusb-${{ matrix.arch }}
+          path: dist/wolfusb-${{ matrix.arch }}
 
   release:
-    name: Create Release
     needs: build
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
+
+      - name: Get version
+        id: version
+        run: echo "version=$(grep '^version' Cargo.toml | head -1 | sed 's/.*\"\(.*\)\".*/\1/')" >> "$GITHUB_OUTPUT"
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
-          path: artifacts
+          path: dist
           merge-multiple: true
 
-      - name: List artifacts
-        run: find artifacts -type f | sort
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          generate_release_notes: true
-          files: artifacts/*
+      - name: Create or update release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="v${{ steps.version.outputs.version }}"
+
+          # Delete existing release if it exists (update scenario)
+          gh release delete "$VERSION" --yes 2>/dev/null || true
+          git push --delete origin "$VERSION" 2>/dev/null || true
+
+          # Create release with binaries
+          gh release create "$VERSION" \
+            --title "WolfUSB $VERSION" \
+            --notes "Static musl binaries for Linux x86_64 and aarch64. Works on any Linux distribution regardless of glibc version." \
+            dist/wolfusb-x86_64 \
+            dist/wolfusb-aarch64
