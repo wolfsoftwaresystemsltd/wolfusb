@@ -61,8 +61,10 @@ fn find_vhci_path() -> io::Result<String> {
             return Ok(p);
         }
     }
-    Err(io::Error::new(io::ErrorKind::NotFound,
-        "vhci_hcd not found — ensure kernel module is loaded (modprobe vhci-hcd)"))
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        "vhci_hcd not found — ensure kernel module is loaded (modprobe vhci-hcd)",
+    ))
 }
 
 /// Ensure vhci-hcd kernel module is loaded. No-op if already loaded.
@@ -76,10 +78,12 @@ pub fn ensure_module_loaded() -> io::Result<()> {
         let _ = Command::new("modprobe").arg("vhci_hcd").status();
     }
     if !Path::new("/sys/devices/platform/vhci_hcd.0").is_dir() {
-        return Err(io::Error::new(io::ErrorKind::NotFound,
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
             "Failed to load vhci-hcd kernel module. Install with: \
              dnf install kernel-modules-extra (Fedora/RHEL) \
-             or apt install linux-modules-extra-$(uname -r) (Debian/Ubuntu)"));
+             or apt install linux-modules-extra-$(uname -r) (Debian/Ubuntu)",
+        ));
     }
     Ok(())
 }
@@ -98,18 +102,30 @@ fn find_free_port(vhci_path: &str) -> io::Result<u32> {
     let content = fs::read_to_string(&status_path)?;
     for line in content.lines() {
         let fields: Vec<&str> = line.split_whitespace().collect();
-        if fields.len() < 3 { continue; }
+        if fields.len() < 3 {
+            continue;
+        }
         // Skip header row (starts with "hub")
-        if fields[0] == "hub" { continue; }
+        if fields[0] == "hub" {
+            continue;
+        }
         // fields[0] = hub type (hs/ss), fields[1] = port, fields[2] = status
-        let port: u32 = match fields[1].parse() { Ok(p) => p, Err(_) => continue };
-        let status: u32 = match fields[2].parse() { Ok(s) => s, Err(_) => continue };
+        let port: u32 = match fields[1].parse() {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        let status: u32 = match fields[2].parse() {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
         if status == 4 {
             return Ok(port);
         }
     }
-    Err(io::Error::new(io::ErrorKind::NotFound,
-        "No free vhci_hcd ports available"))
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        "No free vhci_hcd ports available",
+    ))
 }
 
 /// Attach an authenticated socket to vhci_hcd, creating a virtual USB device.

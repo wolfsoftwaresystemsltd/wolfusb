@@ -28,10 +28,7 @@ pub struct Connection {
 /// Action returned by handle_message — either send a reply, or switch to bridge mode
 enum Action {
     Reply(Message),
-    Bridge {
-        reply: Message,
-        target: DeviceId,
-    },
+    Bridge { reply: Message, target: DeviceId },
 }
 
 impl Connection {
@@ -117,10 +114,16 @@ impl Connection {
             Message::Detach(req) => Action::Reply(self.handle_detach(req).await),
             Message::ControlTransfer(req) => Action::Reply(self.handle_control_transfer(req).await),
             Message::BulkTransfer(req) => Action::Reply(self.handle_bulk_transfer(req).await),
-            Message::InterruptTransfer(req) => Action::Reply(self.handle_interrupt_transfer(req).await),
+            Message::InterruptTransfer(req) => {
+                Action::Reply(self.handle_interrupt_transfer(req).await)
+            }
             Message::ClaimInterface(req) => Action::Reply(self.handle_claim_interface(req).await),
-            Message::ReleaseInterface(req) => Action::Reply(self.handle_release_interface(req).await),
-            Message::SetConfiguration(req) => Action::Reply(self.handle_set_configuration(req).await),
+            Message::ReleaseInterface(req) => {
+                Action::Reply(self.handle_release_interface(req).await)
+            }
+            Message::SetConfiguration(req) => {
+                Action::Reply(self.handle_set_configuration(req).await)
+            }
             Message::Bridge(req) => self.handle_bridge(req).await,
 
             _ => Action::Reply(Message::Error(ErrorResponse {
@@ -141,7 +144,12 @@ impl Connection {
             let devices = rusb::devices().ok()?;
             for d in devices.iter() {
                 if d.bus_number() == target_bus && d.address() == target_addr {
-                    return Some(format!("{}-{}-{}", d.bus_number(), d.address(), d.port_number()));
+                    return Some(format!(
+                        "{}-{}-{}",
+                        d.bus_number(),
+                        d.address(),
+                        d.port_number()
+                    ));
                 }
             }
             None
@@ -162,8 +170,10 @@ impl Connection {
             }
         };
 
-        info!("Bridge: accepting device bus={} addr={} as busid={}",
-            target_bus, target_addr, busid);
+        info!(
+            "Bridge: accepting device bus={} addr={} as busid={}",
+            target_bus, target_addr, busid
+        );
 
         Action::Bridge {
             reply: Message::BridgeAccepted(BridgeAcceptedResponse {

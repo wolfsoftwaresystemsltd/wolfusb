@@ -318,7 +318,12 @@ async fn main() -> anyhow::Result<()> {
             wolfusb::client::commands::cmd_list(&mut session, json).await?;
         }
 
-        Commands::Mount { server, bus, addr, key } => {
+        Commands::Mount {
+            server,
+            bus,
+            addr,
+            key,
+        } => {
             wolfusb::client::mount::cmd_mount(&server, bus, addr, key.as_ref()).await?;
         }
 

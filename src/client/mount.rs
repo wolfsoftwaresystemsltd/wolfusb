@@ -16,7 +16,7 @@
 use std::os::fd::IntoRawFd;
 use std::time::Duration;
 
-use anyhow::{anyhow, Context};
+use anyhow::{Context, anyhow};
 use futures::{SinkExt, StreamExt};
 use log::info;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -37,8 +37,12 @@ pub async fn cmd_mount(
     vhci::ensure_module_loaded()
         .context("vhci_hcd kernel module unavailable — USB virtualization won't work")?;
 
-    info!("Connecting to {} (plain TCP — TLS not supported for mount mode)", server);
-    let tcp_stream = TcpStream::connect(server).await
+    info!(
+        "Connecting to {} (plain TCP — TLS not supported for mount mode)",
+        server
+    );
+    let tcp_stream = TcpStream::connect(server)
+        .await
         .context("Failed to connect to wolfusb server")?;
     tcp_stream.set_nodelay(true).ok();
 
@@ -63,7 +67,8 @@ pub async fn cmd_mount(
 
     // Extract raw socket FD. From here, vhci_hcd drives SUBMIT/UNLINK traffic
     // directly on the socket; our process just parks until detach.
-    let std_stream = tcp_stream.into_std()
+    let std_stream = tcp_stream
+        .into_std()
         .context("Failed to convert TCP stream to std")?;
     std_stream.set_nonblocking(false).ok();
     let fd = std_stream.into_raw_fd();
@@ -83,7 +88,9 @@ pub async fn cmd_mount(
 
     struct RawFdOwner(std::os::fd::RawFd);
     impl std::os::fd::AsRawFd for RawFdOwner {
-        fn as_raw_fd(&self) -> std::os::fd::RawFd { self.0 }
+        fn as_raw_fd(&self) -> std::os::fd::RawFd {
+            self.0
+        }
     }
     let owner = RawFdOwner(fd);
 
@@ -129,12 +136,15 @@ async fn do_hello(
         Vec::new()
     };
 
-    framed.send(Message::Hello(HelloRequest {
-        protocol_version: PROTOCOL_VERSION,
-        client_name: "wolfusb-mount".to_string(),
-        auth_nonce,
-        auth_proof,
-    })).await.context("Failed to send Hello")?;
+    framed
+        .send(Message::Hello(HelloRequest {
+            protocol_version: PROTOCOL_VERSION,
+            client_name: "wolfusb-mount".to_string(),
+            auth_nonce,
+            auth_proof,
+        }))
+        .await
+        .context("Failed to send Hello")?;
 
     let hello_resp = match framed.next().await {
         Some(Ok(Message::HelloResponse(r))) => r,
@@ -157,7 +167,10 @@ async fn do_hello(
         let mut mac = HmacSha256::new_from_slice(kb).expect("HMAC accepts any key length");
         mac.update(&auth_nonce);
         mac.update(b"wolfusb-server");
-        if mac.verify_slice(&hello_resp.auth_challenge_response).is_err() {
+        if mac
+            .verify_slice(&hello_resp.auth_challenge_response)
+            .is_err()
+        {
             return Err(anyhow!("Server HMAC verification failed"));
         }
     }
@@ -170,14 +183,20 @@ async fn send_bridge(
     bus: u8,
     addr: u8,
 ) -> anyhow::Result<String> {
-    let device_id = DeviceId { bus_number: bus, address: addr };
-    framed.send(Message::Bridge(BridgeRequest { device_id })).await
+    let device_id = DeviceId {
+        bus_number: bus,
+        address: addr,
+    };
+    framed
+        .send(Message::Bridge(BridgeRequest { device_id }))
+        .await
         .context("Failed to send Bridge request")?;
 
     match framed.next().await {
         Some(Ok(Message::BridgeAccepted(r))) => Ok(r.busid),
-        Some(Ok(Message::BridgeRejected(r))) =>
-            Err(anyhow!("Server rejected bridge: {}", r.error_message)),
+        Some(Ok(Message::BridgeRejected(r))) => {
+            Err(anyhow!("Server rejected bridge: {}", r.error_message))
+        }
         Some(Ok(other)) => Err(anyhow!("Unexpected response: {:?}", other)),
         Some(Err(e)) => Err(anyhow!("Protocol error: {}", e)),
         None => Err(anyhow!("Connection closed during bridge handshake")),
@@ -198,10 +217,7 @@ const OP_REQ_IMPORT: u16 = 0x8003;
 const OP_REP_IMPORT: u16 = 0x0003;
 
 /// Perform USB/IP OP_REQ_IMPORT / OP_REP_IMPORT on the raw TCP stream.
-async fn op_req_import(
-    stream: &mut TcpStream,
-    busid: &str,
-) -> anyhow::Result<ImportReply> {
+async fn op_req_import(stream: &mut TcpStream, busid: &str) -> anyhow::Result<ImportReply> {
     let mut req = Vec::with_capacity(40);
     req.extend_from_slice(&USBIP_VERSION.to_be_bytes());
     req.extend_from_slice(&OP_REQ_IMPORT.to_be_bytes());
@@ -214,12 +230,18 @@ async fn op_req_import(
     busid_buf[..bb.len()].copy_from_slice(bb);
     req.extend_from_slice(&busid_buf);
 
-    stream.write_all(&req).await.context("Failed to send OP_REQ_IMPORT")?;
+    stream
+        .write_all(&req)
+        .await
+        .context("Failed to send OP_REQ_IMPORT")?;
     stream.flush().await.ok();
 
     // Reply header: version(2) + code(2) + status(4) = 8 bytes
     let mut hdr = [0u8; 8];
-    stream.read_exact(&mut hdr).await.context("Failed to read OP_REP_IMPORT header")?;
+    stream
+        .read_exact(&mut hdr)
+        .await
+        .context("Failed to read OP_REP_IMPORT header")?;
     let code = u16::from_be_bytes([hdr[2], hdr[3]]);
     let status = u32::from_be_bytes([hdr[4], hdr[5], hdr[6], hdr[7]]);
 
@@ -229,14 +251,18 @@ async fn op_req_import(
     if status != 0 {
         return Err(anyhow!(
             "Server rejected OP_REQ_IMPORT with status {} — device '{}' not available",
-            status, busid
+            status,
+            busid
         ));
     }
 
     // usb_device struct: path(256) + busid(32) + bus_num(4) + dev_num(4) + speed(4)
     // + idVendor(2) + idProduct(2) + ... = 312 bytes
     let mut dev = [0u8; 312];
-    stream.read_exact(&mut dev).await.context("Failed to read OP_REP_IMPORT device data")?;
+    stream
+        .read_exact(&mut dev)
+        .await
+        .context("Failed to read OP_REP_IMPORT device data")?;
 
     let bus_num = u32::from_be_bytes([dev[288], dev[289], dev[290], dev[291]]);
     let dev_num = u32::from_be_bytes([dev[292], dev[293], dev[294], dev[295]]);

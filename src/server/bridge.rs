@@ -29,8 +29,10 @@ pub async fn run_bridge<S>(stream: S, target: DeviceId)
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    info!("Bridge: starting USB/IP handler for bus={} addr={}",
-        target.bus_number, target.address);
+    info!(
+        "Bridge: starting USB/IP handler for bus={} addr={}",
+        target.bus_number, target.address
+    );
 
     // Build a UsbIpServer exposing ONLY the requested device.
     // Use the rusb-based constructor so class-specific descriptors (UVC, UAC, etc.)
