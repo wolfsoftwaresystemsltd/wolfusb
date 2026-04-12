@@ -81,9 +81,14 @@ jobs:
           # Delete existing release if it exists (update scenario)
           gh release delete "$VERSION" --yes 2>/dev/null || true
           git push --delete origin "$VERSION" 2>/dev/null || true
+          # Also drop any local tag actions/checkout may have fetched —
+          # otherwise `gh release create` refuses when the tag exists locally
+          # pointing to a different commit.
+          git tag -d "$VERSION" 2>/dev/null || true
 
-          # Create release with binaries
+          # Create release with binaries — pin to this workflow's commit.
           gh release create "$VERSION" \
+            --target "$GITHUB_SHA" \
             --title "WolfUSB $VERSION" \
             --notes "Static musl binaries for Linux x86_64 and aarch64. Works on any Linux distribution regardless of glibc version." \
             dist/wolfusb-x86_64 \
