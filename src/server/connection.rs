@@ -131,11 +131,44 @@ impl Connection {
     }
 
     async fn handle_bridge(&mut self, req: BridgeRequest) -> Action {
-        // Minimal acknowledgement — the `usbip` crate handler takes over from
-        // here and does its own OP_REQ_IMPORT / OP_REP_IMPORT handshake.
+        // Compute the busid the client must send in OP_REQ_IMPORT. The `usbip`
+        // crate's rusb backend formats bus_id as "{bus}-{addr}-{port_number}"
+        // (see usbip/src/lib.rs:244-249). The client can't derive port_number
+        // on its own, so we look up the device and return the correct string.
+        let target_bus = req.device_id.bus_number;
+        let target_addr = req.device_id.address;
+        let busid = tokio::task::spawn_blocking(move || {
+            let devices = rusb::devices().ok()?;
+            for d in devices.iter() {
+                if d.bus_number() == target_bus && d.address() == target_addr {
+                    return Some(format!("{}-{}-{}", d.bus_number(), d.address(), d.port_number()));
+                }
+            }
+            None
+        })
+        .await
+        .ok()
+        .flatten();
+
+        let busid = match busid {
+            Some(b) => b,
+            None => {
+                return Action::Reply(Message::BridgeRejected(BridgeRejectedResponse {
+                    error_message: format!(
+                        "Device not found at bus={} addr={}",
+                        target_bus, target_addr
+                    ),
+                }));
+            }
+        };
+
+        info!("Bridge: accepting device bus={} addr={} as busid={}",
+            target_bus, target_addr, busid);
+
         Action::Bridge {
             reply: Message::BridgeAccepted(BridgeAcceptedResponse {
                 device_id: req.device_id,
+                busid,
                 // Remaining fields are informational only; real device info
                 // comes from OP_REP_IMPORT once the client does the USB/IP
                 // import handshake on the raw stream.

@@ -221,25 +221,21 @@ pub struct BridgeRequest {
 #[derive(Debug, Clone, Encode, Decode)]
 pub struct BridgeAcceptedResponse {
     pub device_id: DeviceId,
-    /// USB/IP "devid" — encoded bus/device numbers used by the kernel
+    /// USB/IP busid string the client sends in OP_REQ_IMPORT.
+    /// Format is "{bus}-{addr}-{port_number}" — server computes and returns
+    /// the correct value so the client doesn't have to guess.
+    pub busid: String,
+    /// Informational — real device info comes from OP_REP_IMPORT
     pub devid: u32,
-    /// Device speed (matches rusb::Speed ordinal)
     pub speed: u8,
-    /// Vendor ID
     pub vendor_id: u16,
-    /// Product ID
     pub product_id: u16,
-    /// Device bcdDevice
     pub bcd_device: u16,
-    /// Device class codes
     pub device_class: u8,
     pub device_subclass: u8,
     pub device_protocol: u8,
-    /// Number of configurations
     pub num_configurations: u8,
-    /// Number of interfaces in active config
     pub num_interfaces: u8,
-    /// Active configuration value (bConfigurationValue)
     pub config_value: u8,
 }
 

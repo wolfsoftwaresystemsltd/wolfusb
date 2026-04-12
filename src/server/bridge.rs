@@ -9,22 +9,22 @@
 //!   - USBIP_CMD_UNLINK / USBIP_RET_UNLINK (proper cancellation)
 //!   - Isochronous transfers (for webcams, audio devices, etc.)
 //!
-//! We keep our wolfusb auth layer in front; the usbip crate only ever sees
-//! authenticated connections.
+//! We use the rusb backend (`new_from_host_with_filter`) because the nusb
+//! path in the usbip crate doesn't populate class-specific descriptors,
+//! breaking UVC webcams, USB audio, and other composite devices.
 
 use std::sync::Arc;
 
 use log::{info, warn};
-use nusb::MaybeFuture;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::protocol::types::DeviceId;
 
 /// Run the USB/IP bridge loop on an authenticated stream.
 ///
-/// `target` identifies the specific USB device the client requested. We open
-/// that device via nusb and only expose it to the USB/IP handler so the client
-/// can only access the requested device, not all local USB devices.
+/// `target` identifies the specific USB device the client requested. We expose
+/// only that one device via the usbip crate so the client can't access other
+/// local USB devices.
 pub async fn run_bridge<S>(stream: S, target: DeviceId)
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -32,32 +32,16 @@ where
     info!("Bridge: starting USB/IP handler for bus={} addr={}",
         target.bus_number, target.address);
 
-    // Find the matching nusb device
-    let all_devices: Vec<nusb::DeviceInfo> = match nusb::list_devices().wait() {
-        Ok(it) => it.collect(),
-        Err(e) => {
-            warn!("Bridge: failed to list USB devices: {}", e);
-            return;
-        }
-    };
+    // Build a UsbIpServer exposing ONLY the requested device.
+    // Use the rusb-based constructor so class-specific descriptors (UVC, UAC, etc.)
+    // are properly populated in the configuration descriptor.
+    let target_bus = target.bus_number;
+    let target_addr = target.address;
+    let server = usbip::UsbIpServer::new_from_host_with_filter(move |d| {
+        d.bus_number() == target_bus && d.address() == target_addr
+    });
 
-    let matching: Vec<nusb::DeviceInfo> = all_devices.into_iter()
-        .filter(|d| d.busnum() == target.bus_number
-                 && d.device_address() == target.address)
-        .collect();
-
-    if matching.is_empty() {
-        warn!("Bridge: no USB device found at bus={} addr={}",
-            target.bus_number, target.address);
-        return;
-    }
-
-    let usb_devices = usbip::UsbIpServer::with_nusb_devices(matching);
-    if usb_devices.is_empty() {
-        warn!("Bridge: failed to open USB device for bridging");
-        return;
-    }
-    let server = Arc::new(usbip::UsbIpServer::new_simulated(usb_devices));
+    let server = Arc::new(server);
 
     let mut stream = stream;
     match usbip::handler(&mut stream, server).await {

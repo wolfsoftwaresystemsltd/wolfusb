@@ -45,14 +45,15 @@ pub async fn cmd_mount(
     let mut framed = Framed::new(tcp_stream, WolfUsbCodec);
 
     do_hello(&mut framed, key).await?;
-    send_bridge(&mut framed, bus, addr).await?;
+    let busid_str = send_bridge(&mut framed, bus, addr).await?;
 
     // Switch to raw USB/IP mode — recover the underlying TCP stream
     let mut tcp_stream = framed.into_inner();
 
-    // USB/IP OP_REQ_IMPORT handshake.
-    // The busid format used by the `usbip` crate for nusb devices is "{bus}-{addr}-0"
-    let busid_str = format!("{}-{}-0", bus, addr);
+    // USB/IP OP_REQ_IMPORT handshake using the busid the server told us.
+    // The `usbip` crate's rusb backend formats bus_id as "{bus}-{addr}-{port_number}",
+    // which the client can't compute on its own — the server provides it.
+    info!("Sending OP_REQ_IMPORT for busid={}", busid_str);
     let import_reply = op_req_import(&mut tcp_stream, &busid_str).await?;
 
     info!(
@@ -67,13 +68,16 @@ pub async fn cmd_mount(
     std_stream.set_nonblocking(false).ok();
     let fd = std_stream.into_raw_fd();
 
+    // The `usbip` crate casts nusb::Speed as u32 for OP_REP_IMPORT, which does
+    // NOT match the kernel's USB_SPEED_* enum values. Translate:
+    //   nusb::Speed { Low=0, Full=1, High=2, Super=3, SuperPlus=4 }
+    //   USB_SPEED   { LOW=1, FULL=2, HIGH=3,   SUPER=5, SUPER_PLUS=6 }
     let speed = match import_reply.speed {
-        1 => Speed::Low,
-        2 => Speed::Full,
-        3 => Speed::High,
-        4 => Speed::Wireless,
-        5 => Speed::Super,
-        6 => Speed::SuperPlus,
+        0 => Speed::Low,
+        1 => Speed::Full,
+        2 => Speed::High,
+        3 => Speed::Super,
+        4 => Speed::SuperPlus,
         _ => Speed::High,
     };
 
@@ -160,17 +164,18 @@ async fn do_hello(
     Ok(())
 }
 
+/// Send Bridge request and return the busid the server wants us to use in OP_REQ_IMPORT.
 async fn send_bridge(
     framed: &mut Framed<TcpStream, WolfUsbCodec>,
     bus: u8,
     addr: u8,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<String> {
     let device_id = DeviceId { bus_number: bus, address: addr };
     framed.send(Message::Bridge(BridgeRequest { device_id })).await
         .context("Failed to send Bridge request")?;
 
     match framed.next().await {
-        Some(Ok(Message::BridgeAccepted(_))) => Ok(()),
+        Some(Ok(Message::BridgeAccepted(r))) => Ok(r.busid),
         Some(Ok(Message::BridgeRejected(r))) =>
             Err(anyhow!("Server rejected bridge: {}", r.error_message)),
         Some(Ok(other)) => Err(anyhow!("Unexpected response: {:?}", other)),
