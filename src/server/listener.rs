@@ -3,12 +3,11 @@
 use std::sync::Arc;
 
 use log::{info, warn};
-use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tokio_rustls::TlsAcceptor;
 
-use super::connection::Connection;
+use super::connection::{Connection, ServerStream};
 use super::device_manager::DeviceManager;
 use crate::error::Result;
 
@@ -39,7 +38,12 @@ pub async fn run_server(
             if let Some(acceptor) = acceptor {
                 match acceptor.accept(stream).await {
                     Ok(tls_stream) => {
-                        let conn = Connection::new(Box::new(tls_stream), dm, peer_addr, key);
+                        let conn = Connection::new(
+                            ServerStream::Tls(Box::new(tls_stream)),
+                            dm,
+                            peer_addr,
+                            key,
+                        );
                         conn.run().await;
                     }
                     Err(e) => {
@@ -47,16 +51,9 @@ pub async fn run_server(
                     }
                 }
             } else {
-                let conn = Connection::new(Box::new(stream), dm, peer_addr, key);
+                let conn = Connection::new(ServerStream::Plain(stream), dm, peer_addr, key);
                 conn.run().await;
             }
         });
     }
 }
-
-/// Combined trait for async read+write streams.
-pub trait AsyncStream: AsyncRead + AsyncWrite + Unpin + Send + Sync {}
-impl<T: AsyncRead + AsyncWrite + Unpin + Send + Sync> AsyncStream for T {}
-
-/// Type-erased async stream for use in Connection.
-pub type BoxedStream = Box<dyn AsyncStream>;

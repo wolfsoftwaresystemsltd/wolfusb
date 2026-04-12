@@ -3,5 +3,6 @@
 pub mod bridge;
 pub mod connection;
 pub mod device_manager;
+pub mod kernel_usbip;
 pub mod listener;
 pub mod transfer;

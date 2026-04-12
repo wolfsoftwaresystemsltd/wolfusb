@@ -1,6 +1,6 @@
 [package]
 name = "wolfusb"
-version = "0.4.3"
+version = "0.5.0"
 edition = "2024"
 description = "Share USB devices over IP"
 license = "MIT"
@@ -9,16 +9,12 @@ license = "MIT"
 # USB access — vendored to statically link libusb (works on any Linux distro)
 rusb = { version = "0.9", features = ["vendored"] }
 
-# Full USB/IP server implementation (async URBs, isoc, proper cancellation)
-# Used in bridge mode to drive real webcams etc. over the wolfusb-authenticated socket.
-# Vendored + patched locally — upstream 0.8 has two bugs that break UVC streaming:
-#   1. Rusb control-OUT handler discards bytes_written, returns empty Vec, so
-#      RET_SUBMIT reports actual_length=0 — UVC SET_CUR probe fails with
-#      "Failed to set UVC probe control : 0 (exp. 26)".
-#   2. RET_SUBMIT serializer writes transfer_buffer on the wire unconditionally,
-#      but the kernel only reads it for IN direction.
-usbip = { path = "vendor/usbip" }
-nusb = "0.2"
+# Note: we intentionally do NOT depend on the `usbip` Rust crate. Earlier
+# versions of wolfusb tried that path but the crate's userspace URB handlers
+# don't cover isochronous transfers (webcams, audio) or concurrent URBs.
+# Instead the server does the auth + OP_REQ_IMPORT/OP_REP_IMPORT handshake
+# itself and hands the raw socket fd to the kernel's `usbip_host` driver via
+# sysfs, which implements the full USB/IP protocol in-kernel.
 
 # Async runtime and networking
 tokio = { version = "1", features = ["full"] }

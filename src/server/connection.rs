@@ -2,22 +2,72 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 
 use futures::{SinkExt, StreamExt};
 use log::{error, info, warn};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::net::TcpStream;
 use tokio::sync::Mutex;
+use tokio_rustls::server::TlsStream;
 use tokio_util::codec::Framed;
 
 use super::device_manager::DeviceManager;
-use super::listener::BoxedStream;
 use super::transfer;
 use crate::protocol::codec::WolfUsbCodec;
 use crate::protocol::messages::*;
 use crate::protocol::types::DeviceId;
 
+/// The connection's underlying stream. Bridge mode requires a raw `TcpStream`
+/// because the kernel `usbip_host` driver needs a kernel-managed fd; a TLS
+/// session can't be handed off.
+pub enum ServerStream {
+    Plain(TcpStream),
+    Tls(Box<TlsStream<TcpStream>>),
+}
+
+impl AsyncRead for ServerStream {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            ServerStream::Plain(s) => Pin::new(s).poll_read(cx, buf),
+            ServerStream::Tls(s) => Pin::new(s.as_mut()).poll_read(cx, buf),
+        }
+    }
+}
+
+impl AsyncWrite for ServerStream {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        match self.get_mut() {
+            ServerStream::Plain(s) => Pin::new(s).poll_write(cx, buf),
+            ServerStream::Tls(s) => Pin::new(s.as_mut()).poll_write(cx, buf),
+        }
+    }
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            ServerStream::Plain(s) => Pin::new(s).poll_flush(cx),
+            ServerStream::Tls(s) => Pin::new(s.as_mut()).poll_flush(cx),
+        }
+    }
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            ServerStream::Plain(s) => Pin::new(s).poll_shutdown(cx),
+            ServerStream::Tls(s) => Pin::new(s.as_mut()).poll_shutdown(cx),
+        }
+    }
+}
+
 pub struct Connection {
-    framed: Framed<BoxedStream, WolfUsbCodec>,
+    framed: Framed<ServerStream, WolfUsbCodec>,
     device_manager: Arc<Mutex<DeviceManager>>,
     peer_addr: SocketAddr,
     authenticated: bool,
@@ -33,7 +83,7 @@ enum Action {
 
 impl Connection {
     pub fn new(
-        stream: BoxedStream,
+        stream: ServerStream,
         device_manager: Arc<Mutex<DeviceManager>>,
         peer_addr: SocketAddr,
         shared_key: Option<Vec<u8>>,
@@ -86,10 +136,21 @@ impl Connection {
         };
 
         if let Some(target) = bridge_handoff {
-            // Hand over raw stream to the USB/IP bridge which uses the `usbip` crate
-            let stream = self.framed.into_inner();
-            super::bridge::run_bridge(stream, target).await;
-            info!("Bridge closed: {}", self.peer_addr);
+            // Hand raw TCP stream to the kernel usbip_host bridge.
+            // TLS sessions can't be bridged — the kernel needs a raw fd.
+            match self.framed.into_inner() {
+                ServerStream::Plain(tcp) => {
+                    super::bridge::run_bridge(tcp, target).await;
+                    info!("Bridge closed: {}", self.peer_addr);
+                }
+                ServerStream::Tls(_) => {
+                    warn!(
+                        "Bridge rejected for {}: TLS sessions cannot be bridged \
+                         (kernel needs raw TCP fd). Reconnect without TLS.",
+                        self.peer_addr
+                    );
+                }
+            }
             return;
         }
 
