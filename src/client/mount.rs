@@ -73,17 +73,19 @@ pub async fn cmd_mount(
     std_stream.set_nonblocking(false).ok();
     let fd = std_stream.into_raw_fd();
 
-    // The `usbip` crate casts nusb::Speed as u32 for OP_REP_IMPORT, which does
+    // The `usbip` crate casts rusb::Speed as u32 for OP_REP_IMPORT, which does
     // NOT match the kernel's USB_SPEED_* enum values. Translate:
-    //   nusb::Speed { Low=0, Full=1, High=2, Super=3, SuperPlus=4 }
-    //   USB_SPEED   { LOW=1, FULL=2, HIGH=3,   SUPER=5, SUPER_PLUS=6 }
+    //   rusb::Speed { Unknown=0, Low=1, Full=2, High=3, Super=4, SuperPlus=5 }
+    //   USB_SPEED   { UNKNOWN=0, LOW=1, FULL=2, HIGH=3, WIRELESS=4, SUPER=5, SUPER_PLUS=6 }
+    // 0-3 pass through unchanged; Super and SuperPlus shift up by one to skip
+    // the kernel's WIRELESS slot.
     let speed = match import_reply.speed {
-        0 => Speed::Low,
-        1 => Speed::Full,
-        2 => Speed::High,
-        3 => Speed::Super,
-        4 => Speed::SuperPlus,
-        _ => Speed::High,
+        1 => Speed::Low,
+        2 => Speed::Full,
+        3 => Speed::High,
+        4 => Speed::Super,
+        5 => Speed::SuperPlus,
+        _ => Speed::High, // Unknown or out-of-range — High is the safest default
     };
 
     struct RawFdOwner(std::os::fd::RawFd);
