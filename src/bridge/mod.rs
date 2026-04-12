@@ -13,5 +13,4 @@
 //! We bypass the usbipd daemon and usbip CLI entirely — wolfusb handles auth
 //! (TLS + HMAC), then hands the authenticated socket to the kernel driver.
 
-pub mod usbip;
 pub mod vhci;

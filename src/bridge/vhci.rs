@@ -85,20 +85,26 @@ pub fn ensure_module_loaded() -> io::Result<()> {
 }
 
 /// Parse vhci_hcd status file to find the first free port.
-/// Status format (one line per port):
-///   prt sta spd bus dev socket           local_busid
-///   0001 004 000 0000 000 0000000000000000 0-0
-/// Status code 004 = free, others = busy.
+/// Status format (one line per port), header row first:
+///   hub port sta spd dev      sockfd local_busid
+///   hs  0000 004 000 00000000 000000 0-0
+///   ss  0008 004 000 00000000 000000 0-0
+/// Columns: hub (hs/ss), port, status (004=free), speed, dev, sockfd, busid
+/// Status code 004 = VDEV_ST_NULL (free), others = busy.
+/// For bridge use, we prefer HS (high-speed 2.0) ports since most USB devices
+/// are happy there; SS ports are for USB 3.x.
 fn find_free_port(vhci_path: &str) -> io::Result<u32> {
     let status_path = format!("{}/status", vhci_path);
     let content = fs::read_to_string(&status_path)?;
-    for line in content.lines().skip(1) {  // skip header
+    for line in content.lines() {
         let fields: Vec<&str> = line.split_whitespace().collect();
-        if fields.len() < 2 { continue; }
-        let port: u32 = match fields[0].parse() { Ok(p) => p, Err(_) => continue };
-        let status: u32 = match fields[1].parse() { Ok(s) => s, Err(_) => continue };
+        if fields.len() < 3 { continue; }
+        // Skip header row (starts with "hub")
+        if fields[0] == "hub" { continue; }
+        // fields[0] = hub type (hs/ss), fields[1] = port, fields[2] = status
+        let port: u32 = match fields[1].parse() { Ok(p) => p, Err(_) => continue };
+        let status: u32 = match fields[2].parse() { Ok(s) => s, Err(_) => continue };
         if status == 4 {
-            // VDEV_ST_NULL — port is free
             return Ok(port);
         }
     }

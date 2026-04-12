@@ -30,8 +30,7 @@ enum Action {
     Reply(Message),
     Bridge {
         reply: Message,
-        handle: Arc<rusb::DeviceHandle<rusb::Context>>,
-        devid: u32,
+        target: DeviceId,
     },
 }
 
@@ -75,7 +74,7 @@ impl Connection {
                         break None;
                     }
                 }
-                Action::Bridge { reply, handle, devid } => {
+                Action::Bridge { reply, target } => {
                     if let Err(e) = self.framed.send(reply).await {
                         error!("Failed to send BridgeAccepted to {}: {e}", self.peer_addr);
                         break None;
@@ -84,15 +83,15 @@ impl Connection {
                         error!("Failed to flush before bridge mode: {e}");
                         break None;
                     }
-                    break Some((handle, devid));
+                    break Some(target);
                 }
             }
         };
 
-        if let Some((handle, devid)) = bridge_handoff {
-            // Hand over raw stream to bridge loop
+        if let Some(target) = bridge_handoff {
+            // Hand over raw stream to the USB/IP bridge which uses the `usbip` crate
             let stream = self.framed.into_inner();
-            super::bridge::run_bridge(stream, handle, devid).await;
+            super::bridge::run_bridge(stream, target).await;
             info!("Bridge closed: {}", self.peer_addr);
             return;
         }
@@ -132,81 +131,27 @@ impl Connection {
     }
 
     async fn handle_bridge(&mut self, req: BridgeRequest) -> Action {
-        use crate::bridge::usbip::make_devid;
-        let dm = self.device_manager.clone();
-        let did = req.device_id;
-        // Attach (claim) and get a handle
-        let attach_res = tokio::task::spawn_blocking(move || {
-            let mut mgr = dm.blocking_lock();
-            let _ = mgr.attach(did, "0.0.0.0:0".parse().unwrap());
-            mgr.get_handle(did)
-        }).await;
-
-        let handle = match attach_res {
-            Ok(Ok(h)) => h,
-            Ok(Err(e)) => {
-                return Action::Reply(Message::BridgeRejected(BridgeRejectedResponse {
-                    error_message: format!("Failed to attach device: {}", e),
-                }));
-            }
-            Err(e) => {
-                return Action::Reply(Message::BridgeRejected(BridgeRejectedResponse {
-                    error_message: format!("Internal error: {}", e),
-                }));
-            }
-        };
-
-        // Read descriptors for BridgeAccepted
-        let handle_c = handle.clone();
-        let desc_res = tokio::task::spawn_blocking(move || -> Result<BridgeAcceptedResponse, String> {
-            let device = handle_c.device();
-            let desc = device.device_descriptor().map_err(|e| e.to_string())?;
-            let config_value = device.active_config_descriptor()
-                .map(|c| c.number()).unwrap_or(0);
-            let num_interfaces = device.active_config_descriptor()
-                .map(|c| c.num_interfaces()).unwrap_or(0);
-            let speed_u8 = match device.speed() {
-                rusb::Speed::Low => 1,
-                rusb::Speed::Full => 2,
-                rusb::Speed::High => 3,
-                rusb::Speed::Super => 5,
-                rusb::Speed::SuperPlus => 6,
-                _ => 3,
-            };
-            Ok(BridgeAcceptedResponse {
-                device_id: did,
-                devid: make_devid(did.bus_number, did.address),
-                speed: speed_u8,
-                vendor_id: desc.vendor_id(),
-                product_id: desc.product_id(),
-                bcd_device: {
-                    let v = desc.device_version();
-                    ((v.major() as u16) << 8) | ((v.minor() as u16) << 4) | (v.sub_minor() as u16)
-                },
-                device_class: desc.class_code(),
-                device_subclass: desc.sub_class_code(),
-                device_protocol: desc.protocol_code(),
-                num_configurations: desc.num_configurations(),
-                num_interfaces,
-                config_value,
-            })
-        }).await;
-
-        match desc_res {
-            Ok(Ok(reply)) => {
-                let devid = reply.devid;
-                Action::Bridge {
-                    reply: Message::BridgeAccepted(reply),
-                    handle,
-                    devid,
-                }
-            }
-            Ok(Err(e)) => Action::Reply(Message::BridgeRejected(BridgeRejectedResponse {
-                error_message: e,
-            })),
-            Err(e) => Action::Reply(Message::BridgeRejected(BridgeRejectedResponse {
-                error_message: format!("Internal error: {}", e),
-            })),
+        // Minimal acknowledgement — the `usbip` crate handler takes over from
+        // here and does its own OP_REQ_IMPORT / OP_REP_IMPORT handshake.
+        Action::Bridge {
+            reply: Message::BridgeAccepted(BridgeAcceptedResponse {
+                device_id: req.device_id,
+                // Remaining fields are informational only; real device info
+                // comes from OP_REP_IMPORT once the client does the USB/IP
+                // import handshake on the raw stream.
+                devid: 0,
+                speed: 0,
+                vendor_id: 0,
+                product_id: 0,
+                bcd_device: 0,
+                device_class: 0,
+                device_subclass: 0,
+                device_protocol: 0,
+                num_configurations: 0,
+                num_interfaces: 0,
+                config_value: 0,
+            }),
+            target: req.device_id,
         }
     }
 
