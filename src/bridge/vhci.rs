@@ -191,8 +191,12 @@ fn port_status_from_content(content: &str, port: u32) -> Option<u32> {
 /// dead port. A missing port row or an unreadable status file counts as "not
 /// in use", so we fail toward reconnecting rather than hanging.
 pub fn port_in_use(port: u32) -> bool {
-    let Ok(vhci_path) = find_vhci_path() else { return false };
-    let Ok(content) = fs::read_to_string(format!("{}/status", vhci_path)) else { return false };
+    let Ok(vhci_path) = find_vhci_path() else {
+        return false;
+    };
+    let Ok(content) = fs::read_to_string(format!("{}/status", vhci_path)) else {
+        return false;
+    };
     port_status_from_content(&content, port).is_some_and(|s| s != 4)
 }
 
@@ -209,7 +213,7 @@ mod tests {
         assert_eq!(port_status_from_content(content, 0), Some(6)); // in use
         assert_eq!(port_status_from_content(content, 1), Some(4)); // free
         assert_eq!(port_status_from_content(content, 8), Some(4)); // free
-        assert_eq!(port_status_from_content(content, 99), None);   // absent
+        assert_eq!(port_status_from_content(content, 99), None); // absent
         // The derived "in use?" predicate: only a non-4 status counts.
         assert!(port_status_from_content(content, 0).is_some_and(|s| s != 4));
         assert!(port_status_from_content(content, 1).is_none_or(|s| s == 4));
