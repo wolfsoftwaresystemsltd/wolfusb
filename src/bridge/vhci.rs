@@ -162,3 +162,56 @@ pub fn detach(port: u32) -> io::Result<()> {
 pub fn is_available() -> bool {
     Path::new("/sys/devices/platform/vhci_hcd.0").is_dir()
 }
+
+/// Look up the status code for `port` in a vhci `status` file's contents.
+/// `None` if the port isn't listed. Status `4` = VDEV_ST_NULL (free); anything
+/// else means a device is bridged on the port. Pure (no I/O) for testability.
+fn port_status_from_content(content: &str, port: u32) -> Option<u32> {
+    for line in content.lines() {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if fields.len() < 3 || fields[0] == "hub" {
+            continue;
+        }
+        let p: u32 = match fields[1].parse() {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        if p != port {
+            continue;
+        }
+        return fields[2].parse().ok();
+    }
+    None
+}
+
+/// True while `port` still has a device bridged on it. Returns false once the
+/// kernel frees the port — which happens when the USB/IP socket dies (the
+/// source server closed the connection or rebooted). `wolfusb mount` polls this
+/// so it can exit (and let systemd reconnect) instead of parking forever on a
+/// dead port. A missing port row or an unreadable status file counts as "not
+/// in use", so we fail toward reconnecting rather than hanging.
+pub fn port_in_use(port: u32) -> bool {
+    let Ok(vhci_path) = find_vhci_path() else { return false };
+    let Ok(content) = fs::read_to_string(format!("{}/status", vhci_path)) else { return false };
+    port_status_from_content(&content, port).is_some_and(|s| s != 4)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn port_status_parsing_distinguishes_used_from_free() {
+        let content = "hub port sta spd dev      sockfd local_busid\n\
+                       hs  0000 006 003 00020003 000019 1-1\n\
+                       hs  0001 004 000 00000000 000000 0-0\n\
+                       ss  0008 004 000 00000000 000000 0-0\n";
+        assert_eq!(port_status_from_content(content, 0), Some(6)); // in use
+        assert_eq!(port_status_from_content(content, 1), Some(4)); // free
+        assert_eq!(port_status_from_content(content, 8), Some(4)); // free
+        assert_eq!(port_status_from_content(content, 99), None);   // absent
+        // The derived "in use?" predicate: only a non-4 status counts.
+        assert!(port_status_from_content(content, 0).is_some_and(|s| s != 4));
+        assert!(port_status_from_content(content, 1).is_none_or(|s| s == 4));
+    }
+}

@@ -103,14 +103,51 @@ pub async fn cmd_mount(
         import_reply.vendor_id, import_reply.product_id
     );
 
-    tokio::signal::ctrl_c().await.ok();
+    // Park until EITHER the operator detaches (Ctrl-C) OR the kernel releases
+    // our vhci port. The kernel frees the port when the USB/IP socket dies —
+    // i.e. when the source server closes the connection or reboots. We used to
+    // wait only on Ctrl-C, so on a source reboot this process sat here forever
+    // while the device was already gone; systemd never saw an exit, so the
+    // mount unit's Restart= never fired and the device stopped forwarding until
+    // a manual re-attach (PapaSchlumpf 2026-06-13). Now we detect the released
+    // port and exit NON-ZERO so the unit (Restart=always) reconnects on its own.
+    // Poll cadence for the vhci port-liveness check, and how many consecutive
+    // "free" reads confirm a real disconnect (vs a transient sysfs blip) before
+    // we exit to reconnect. 2 × 2s ≈ 4s of confirmed-free.
+    const POLL_INTERVAL: Duration = Duration::from_secs(2);
+    const CONSECUTIVE_FREE_TO_EXIT: u8 = 2;
+    let port_lost = async {
+        let mut consecutive_free = 0u8;
+        loop {
+            tokio::time::sleep(POLL_INTERVAL).await;
+            if vhci::port_in_use(port) {
+                consecutive_free = 0;
+            } else {
+                consecutive_free += 1;
+                if consecutive_free >= CONSECUTIVE_FREE_TO_EXIT {
+                    break;
+                }
+            }
+        }
+    };
 
-    println!("\nDetaching port {}...", port);
-    if let Err(e) = vhci::detach(port) {
-        log::warn!("Failed to detach port {}: {}", port, e);
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {
+            println!("\nDetaching port {}...", port);
+            if let Err(e) = vhci::detach(port) {
+                log::warn!("Failed to detach port {}: {}", port, e);
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            Ok(())
+        }
+        _ = port_lost => {
+            log::warn!(
+                "vhci port {} was released — the connection to {} dropped (source reboot or detach). Exiting so systemd reconnects.",
+                port, server
+            );
+            Err(anyhow!("USB device connection lost (vhci port {} released)", port))
+        }
     }
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    Ok(())
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
